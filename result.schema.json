@@ -1,0 +1,45 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "pr_url", "commit_sha", "criteria", "checks", "security", "qa", "deployment", "blockers"],
+  "properties": {
+    "status": {"type": "string", "enum": ["ready", "blocked", "failed"]},
+    "summary": {"type": "string"},
+    "pr_url": {"type": "string"},
+    "commit_sha": {"type": "string"},
+    "criteria": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["requirement", "status", "evidence"],
+        "properties": {
+          "requirement": {"type": "string"},
+          "status": {"type": "string", "enum": ["passed", "failed", "unverified"]},
+          "evidence": {"type": "string"}
+        }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["command", "passed", "evidence"],
+        "properties": {
+          "command": {"type": "string"}, "passed": {"type": "boolean"}, "evidence": {"type": "string"}
+        }
+      }
+    },
+    "security": {"type": "string", "enum": ["APPROVED", "CONDITIONAL", "BLOCKED"]},
+    "qa": {"type": "string", "enum": ["passed", "failed", "unverified"]},
+    "deployment": {
+      "type": "object", "additionalProperties": false,
+      "required": ["status", "environment", "sha", "url", "evidence"],
+      "properties": {
+        "status": {"type": "string", "enum": ["not-requested", "verified", "failed", "unverified"]},
+        "environment": {"type": "string"}, "sha": {"type": "string"},
+        "url": {"type": "string"}, "evidence": {"type": "string"}
+      }
+    },
+    "blockers": {"type": "array", "items": {"type": "string"}}
+  }
+}

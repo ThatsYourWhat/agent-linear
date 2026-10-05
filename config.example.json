@@ -1,0 +1,20 @@
+{
+  "codex": "codex",
+  "gh": "gh",
+  "projects": {
+    "LINEAR-PROJECT-UUID": {
+      "team_id": "LINEAR-TEAM-UUID",
+      "ready_state_id": "LINEAR-READY-STATE-UUID",
+      "label": "agent-ready",
+      "repo_path": "/absolute/path/to/project",
+      "github_repo": "OWNER/REPO",
+      "base_branch": "staging",
+      "require_signed_commits": true,
+      "deployment": {
+        "mode": "pr-only",
+        "environment": "none",
+        "instructions": "Create a PR into staging. Do not merge or deploy; releases are handled by the owner."
+      }
+    }
+  }
+}
