@@ -134,6 +134,8 @@ def configure_projects(path):
             route["label"] = label
         config["projects"][project_id] = route
         print(f"{project_id} -> {route['github_repo']} (base: {route['base_branch']})")
+        if input("Add another project? [y/N]: ").strip().lower() not in ("y", "yes"):
+            break
     validate_config(config)
     # Replace only after validation, preserving existing routes and deployment policies.
     with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as saved:

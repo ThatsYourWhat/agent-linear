@@ -155,8 +155,9 @@ python3 runner.py install-cron --setup
 
 The prompts collect each Linear project UUID, team UUID, ready-status UUID,
 local repository path, and optional label. The GitHub repository is read from
-the local repository's origin. Enter another project UUID to add another route,
-or leave it blank to finish. Existing routes and deployment policies are
+the local repository's origin. After each route, `Add another project? [y/N]`
+defaults to finishing: press Enter or enter `n` to save and exit, or enter `y`
+to configure another project. Existing routes and deployment policies are
 preserved; new routes default to signed commits, PRs into `staging`, and
 `pr-only` deployment. Validated mappings are saved privately to `config.json`,
 then the installer checks Linear access and installs the single five-minute job.

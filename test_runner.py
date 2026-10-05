@@ -118,6 +118,21 @@ class RunnerTest(unittest.TestCase):
                 runner.smoke_test(config)
             api.assert_not_called()
 
+    def test_setup_finishes_after_project_unless_another_is_requested(self):
+        second = "66666666-6666-4666-8666-666666666666"
+        for another in ("", "n", "y"):
+            with self.subTest(another=another), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp) / "config.json"
+                answers = [PROJECT, ROUTE["team_id"], ROUTE["ready_state_id"], temp, "-", another]
+                if another == "y":
+                    answers += [second, ROUTE["team_id"], ROUTE["ready_state_id"], temp, "-", "n"]
+                with patch("builtins.input", side_effect=answers) as prompts, \
+                        patch.object(runner, "command", return_value="https://github.com/acme/widget.git"):
+                    runner.configure_projects(path)
+                saved = json.loads(path.read_text())
+                self.assertEqual(set(saved["projects"]), {PROJECT, second} if another == "y" else {PROJECT})
+                self.assertEqual(prompts.call_args.args[0], "Add another project? [y/N]: ")
+
     def test_setup_action_only_collects_routes(self):
         with tempfile.TemporaryDirectory() as temp, patch.object(runner, "ROOT", Path(temp)), \
                 patch.object(runner.sys, "argv", ["runner.py", "setup"]), \
