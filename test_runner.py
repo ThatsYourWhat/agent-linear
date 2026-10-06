@@ -277,6 +277,7 @@ class RunnerTest(unittest.TestCase):
                 error = subprocess.CalledProcessError(128, ["git", "fetch", "origin", "staging"],
                                                      stderr="missing staging; test-secret")
                 with patch.object(runner, "command", side_effect=error), \
+                        patch.object(runner, "graphql", return_value={"commentCreate": {"success": True, "comment": {"id": ISSUE}}}), \
                         patch.dict(os.environ, {"LINEAR_API_KEY": "test-secret"}):
                     with self.assertRaises(subprocess.CalledProcessError):
                         runner.run_issue(config, PROJECT, issue, runs, db)
@@ -350,6 +351,78 @@ class RunnerTest(unittest.TestCase):
                                 "url": "https://preview.example", "evidence": "health + SHA + behavior"}
         with self.assertRaisesRegex(ValueError, "PR-only"):
             runner.validate_result(report, ROUTE)
+
+    def test_run_comments_report_outcome_session_and_delivery_failures(self):
+        session = "77777777-7777-4777-8777-777777777777"
+        for outcome in ("blocked", "failed", "process-error", "start-error", "finish-error"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temp:
+                runs = Path(temp)
+                db = sqlite3.connect(":memory:")
+                self.addCleanup(db.close)
+                db.execute("CREATE TABLE runs (issue_id TEXT PRIMARY KEY, identifier TEXT, status TEXT, folder TEXT, pr_url TEXT)")
+                issue = {"id": ISSUE, "identifier": "APP-1", "title": "Handle input", "description": "Reject empty input",
+                         "project": {"id": PROJECT}, "team": {"id": ROUTE["team_id"]},
+                         "state": {"id": ROUTE["ready_state_id"]}}
+                config = {"codex": "test-codex", "gh": "test-gh", "projects": {PROJECT: dict(ROUTE, repo_path=temp)}}
+                launched, comments = [], []
+
+                def api(query, variables):
+                    self.assertIn("commentCreate(input: $input)", query)
+                    self.assertEqual(variables["input"]["issueId"], ISSUE)
+                    self.assertNotIn("test-secret", variables["input"]["body"])
+                    comments.append(variables["input"]["body"])
+                    if len(comments) == 1:
+                        self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], "running")
+                        self.assertFalse(launched)
+                    if outcome == "start-error" and len(comments) == 1:
+                        return {"commentCreate": {"success": False}}
+                    if outcome == "finish-error" and len(comments) == 2:
+                        raise runner.urllib.error.URLError("test-secret")
+                    return {"commentCreate": {"success": True, "comment": {"id": ISSUE}}}
+
+                def process(args, **kwargs):
+                    launched.append(args)
+                    kwargs["stdout"].write('{partial\n[]\n{"type":"thread.started","thread_id":"invalid"}\n' +
+                                           json.dumps({"type": "thread.started", "thread_id": session}) + "\n{partial")
+                    if outcome == "process-error":
+                        raise subprocess.CalledProcessError(1, args)
+                    report = result()
+                    report["status"] = "blocked" if outcome == "finish-error" else outcome
+                    Path(args[args.index("--output-last-message") + 1]).write_text(json.dumps(report))
+                    return subprocess.CompletedProcess(args, 0)
+
+                with patch.object(runner, "graphql", side_effect=api), \
+                        patch.object(runner.socket, "gethostname", return_value="worker-host"), \
+                        patch.object(runner, "git_profile", return_value={"user.name": "Test", "user.email": "test@example.com"}), \
+                        patch.object(runner, "command", return_value=""), \
+                        patch.object(runner, "verify_pr"), \
+                        patch.object(runner.subprocess, "run", side_effect=process), \
+                        patch.dict(os.environ, {"LINEAR_API_KEY": "test-secret"}):
+                    if outcome in ("start-error", "process-error"):
+                        with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                            runner.run_issue(config, PROJECT, issue, runs, db)
+                    else:
+                        runner.run_issue(config, PROJECT, issue, runs, db)
+                    runner.run_issue(config, PROJECT, issue, runs, db)
+                expected = "blocked" if outcome == "finish-error" else "failed" if outcome.endswith("error") else outcome
+                self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], expected)
+                self.assertEqual(len(comments), 2)
+                self.assertEqual(comments[0], "Run claimed on worker-host. Starting work on APP-1.")
+                self.assertIn(f"Run finished on worker-host with status {expected}.", comments[1])
+                if outcome == "start-error":
+                    self.assertFalse(launched)
+                    self.assertNotIn("codex resume", comments[1])
+                else:
+                    self.assertIn(f"Resume the codex session: `codex resume {session}`", comments[1])
+                if outcome not in ("start-error", "process-error"):
+                    self.assertEqual(comments[1], f"Run finished on worker-host with status {expected}. "
+                                     f"View pull request at {result()['pr_url']}. Resume the codex session: `codex resume {session}`")
+                folder = runs / ISSUE
+                if outcome == "finish-error":
+                    self.assertEqual((folder / "finish-comment-error.txt").read_text(), "URLError\n")
+                    self.assertFalse((folder / "failure.txt").exists())
+                else:
+                    self.assertTrue((folder / "finish-comment.json").exists())
 
     def test_cron_preserves_unrelated_entries_and_replaces_only_own_job(self):
         old = "MAILTO=ops@example.com\n0 0 * * * backup # backup\nold # blank-agent-linear\n"
@@ -478,10 +551,13 @@ class RunnerTest(unittest.TestCase):
                 real_run(["git", "commit", "-S", "-m", "Handle input"],
                          cwd=repo, env=env, check=True, capture_output=True)
                 sha = real_command(["git", "rev-parse", "HEAD"], repo)
+                kwargs["stdout"].write(json.dumps({"type": "thread.started", "thread_id": PROJECT}) + "\n")
                 Path(args[args.index("--output-last-message") + 1]).write_text(json.dumps(result(sha)))
                 return subprocess.CompletedProcess(args, 0)
 
             with patch.object(runner, "command", side_effect=commands), \
+                    patch.object(runner, "graphql", return_value={"commentCreate": {"success": True, "comment": {"id": ISSUE}}}) as comments, \
+                    patch.object(runner.socket, "gethostname", return_value="worker-host"), \
                     patch.object(runner.subprocess, "run", side_effect=processes), \
                     patch.dict(os.environ, {"LINEAR_API_KEY": "test-secret", "GIT_AUTHOR_NAME": "Wrong",
                                             "GIT_AUTHOR_EMAIL": "wrong@example.com"}):
@@ -489,6 +565,10 @@ class RunnerTest(unittest.TestCase):
                 runner.run_issue(config, PROJECT, issue, runs, db)
                 self.assertEqual(len(launches), 1)
                 self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], "ready")
+                self.assertEqual(comments.call_count, 2)
+                self.assertEqual(comments.call_args.args[1]["input"]["body"],
+                                 f"Run finished on worker-host with status ready. View pull request at {result()['pr_url']}. "
+                                 f"Resume the codex session: `codex resume {PROJECT}`")
                 folder = runs / ISSUE
                 report = json.loads((folder / "result.json").read_text())
                 checkout = folder / "repo"
@@ -514,6 +594,8 @@ class RunnerTest(unittest.TestCase):
                 self.assertEqual(len(launches), 2)
                 self.assertEqual(db.execute("SELECT status FROM runs WHERE issue_id=?", (next_issue["id"],)).fetchone()[0], "failed")
                 self.assertTrue((runs / next_issue["id"] / "failure.txt").exists())
+                self.assertEqual(comments.call_count, 4)
+                self.assertIn("with status failed.", comments.call_args.args[1]["input"]["body"])
             self.assertEqual((source / "app.txt").read_text(), "human uncommitted work\n")
             self.assertEqual(git("rev-parse", "HEAD"), base)
             db.close()

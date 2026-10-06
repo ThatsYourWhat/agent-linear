@@ -63,8 +63,9 @@ eligible issues, including existing ones, rather than a creation-time cutoff.
 Supply the Linear API key through the local `LINEAR_API_KEY` environment variable.
 The runner does not load credential files. Credentials are not stored in config,
 issue snapshots, prompts, or the state database, and the Linear key is removed
-from the agent's environment. Linear is read-only: this version does not post
-comments or change issue status.
+from the agent's environment. The runner posts claim and finish comments through
+Linear's API; the key must allow comment creation. It does not change issue status
+or assignment. Smoke tests and dry runs remain read-only against Linear.
 
 All projects use `pr-only` with environment `none`; the runner rejects preview
 and direct deployment policies. The agent creates a PR into `staging`, then
@@ -92,7 +93,8 @@ and the filtered Linear queues. It prints counts instead of issue bodies.
 It does not launch an agent, claim issues, create SQLite state, change product
 files, create commits/branches/PRs, or install cron. An empty queue does not prove
 the project/team/status IDs belong together; verify those in Linear. The smoke
-test does not exercise signing, a model request, or the cron job's environment.
+test does not exercise signing, a model request, Linear comment-write access,
+or the cron job's environment.
 
 Feature processing is enabled later, only when explicitly requested:
 
@@ -107,7 +109,8 @@ does not start Codex, clone, push, create a PR, or deploy. It creates only the
 local lock/state files. Real polling refreshes each issue immediately before
 launching, so a withdrawn ready label/state does not start stale work.
 
-For a saved issue snapshot, the same launcher can run without Linear access:
+For a saved issue snapshot, the same launcher can run with Linear access for
+claim and finish comments:
 
 ```bash
 python3 runner.py run --project REAL_PROJECT_UUID --issue-file /absolute/path/issue.json --dry-run
@@ -118,6 +121,29 @@ The snapshot uses Linear's `id`, `identifier`, `title`, `description`, `url`,
 and nested `project.id`, `team.id`, `state.id`. Supply the full body and linked
 dependency context. Saved snapshots are deliberate manual inputs, not refreshed
 from Linear. A live target session still needs Codex/GitHub/network access.
+
+After the local claim is committed, the runner posts
+`Run claimed on HOSTNAME. Starting work on IDENTIFIER.` before cloning or launching
+Codex. If that comment cannot be confirmed, the run fails without starting feature
+work. The comment announces ownership; SQLite remains the local duplicate guard,
+and the comment is not a lock across machines.
+
+After saving the final outcome and verifying any `ready` result, the runner posts:
+
+```text
+Run finished on <hostname> with status <run status>. View pull request at <GitHub PR URL>. Resume the codex session: `codex resume <codex session id>`
+```
+
+Statuses are `ready`, `blocked`, or `failed`. The session UUID comes from Codex's
+`thread.started` JSONL event, not the agent's report. Resume on the named machine
+under the original OS user, from `.runs/ISSUE_UUID/repo`. When no PR URL is recorded,
+the comment says it is unavailable; when no session ID is recorded, it omits the
+resume command and explains that the session is unavailable. A finish-comment
+failure preserves the run outcome and logs delivery evidence in the issue's
+scratch directory. Comment bodies, confirmed IDs, and delivery errors are retained
+as `start-comment.*` and `finish-comment.*`. There are no automatic mutation retries:
+after a timeout, check Linear before manually reposting. A killed runner may leave
+only a start comment. A normal run adds two API requests for these comments.
 
 Every issue is claimed in `.runs/state.sqlite3` before external work starts.
 The existing repository is cloned with separate git metadata; only committed
@@ -193,7 +219,7 @@ previous crontab to `.runs/crontab.before-uninstall`, and verifies removal.
 It works without project config or credentials and while a worker is active.
 Already-running sessions continue; re-enable polling with `install-cron`.
 Keep the host awake; cron does not replay missed ticks. Inspect logs and local
-status for failures; no outbound notification service is configured.
+status for failures; Linear comments provide per-run notifications.
 
 ## Evidence and recovery
 
@@ -215,7 +241,9 @@ recovery manual; deleting state to force retries can duplicate external work.
 The tests exercise a real throwaway git repository with simulated Codex/GitHub
 responses, plus pagination, API errors, completion gates, signing rejection,
 duplicate suppression, failed-run retention, crontab preservation, and the smoke
-test's lack of issue-work/scheduling effects. They do not prove live Linear auth,
+test's lack of issue-work/scheduling effects. They also cover claim/finish comments,
+recorded session IDs, and notification failures without changing run outcomes.
+They do not prove live Linear auth or comment delivery,
 model behavior, real GitHub delivery, or cron execution. The first live check
 is only the smoke test; model/signing/issue-to-PR and scheduled execution evidence
 can be collected later when feature processing is authorized. Deployment is

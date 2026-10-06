@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shlex
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -67,6 +68,41 @@ def issues(project_id, route, issue_id=None):
         if not cursor or cursor == after:
             raise ValueError("Linear returned a non-advancing pagination cursor")
         after = cursor
+
+
+def post_comment(issue_id, body, folder, stage):
+    """Keep delivery evidence; never retry an ambiguous mutation automatically."""
+    try:
+        (folder / f"{stage}-comment.txt").write_text(body + "\n")
+        payload = graphql("""mutation RunComment($input: CommentCreateInput!) {
+          commentCreate(input: $input) { success comment { id } }
+        }""", {"input": {"issueId": issue_id, "body": body}})["commentCreate"]
+        if payload["success"] is not True or not (payload.get("comment") or {}).get("id"):
+            raise ValueError("Linear comment was not confirmed")
+        (folder / f"{stage}-comment.json").write_text(json.dumps(payload) + "\n")
+        return True
+    except Exception as error:
+        # Provider bodies and exception messages can contain private data or secrets.
+        try:
+            (folder / f"{stage}-comment-error.txt").write_text(type(error).__name__ + "\n")
+        except OSError:
+            pass  # A notification failure must not overwrite the saved run outcome.
+        print(f"Linear {stage} comment delivery failed; inspect {folder}", file=sys.stderr)
+        return False
+
+
+def session_id(folder):
+    events = folder / "events.jsonl"
+    if events.exists():
+        with events.open() as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                    if isinstance(event, dict) and event.get("type") == "thread.started":
+                        return str(uuid.UUID(event["thread_id"]))
+                except (ValueError, KeyError, TypeError, AttributeError):
+                    continue  # A crashed process can leave a partial JSONL line.
+    return None
 
 
 def github_name(remote):
@@ -276,7 +312,12 @@ def run_issue(config, project_id, issue, runs, db, lock_fd=None):
     db.execute("INSERT INTO runs VALUES (?, ?, ?, ?, ?)",
                (issue["id"], issue["identifier"], "running", str(folder), ""))
     db.commit()  # Claim before cloning, launching, pushing, or creating a PR.
+    hostname = socket.gethostname()
+    status, pr_url = "failed", ""
     try:
+        if not post_comment(issue["id"], f"Run claimed on {hostname}. Starting work on {issue['identifier']}.",
+                            folder, "start"):
+            raise ValueError("Start comment failed; no feature work launched")
         repo = folder / "repo"
         source = Path(route["repo_path"])
         profile = git_profile(source)
@@ -321,12 +362,17 @@ def run_issue(config, project_id, issue, runs, db, lock_fd=None):
                            env=env, check=True, cwd=repo,
                            pass_fds=() if lock_fd is None else (lock_fd,))
         result = json.loads((folder / "result.json").read_text())
+        candidate = result.get("pr_url", "")
+        if isinstance(candidate, str) and re.fullmatch(
+                rf"https://github\.com/{re.escape(route['github_repo'])}/pull/\d+", candidate, re.I):
+            pr_url = candidate
         if result["status"] not in ("ready", "blocked", "failed"):
             raise ValueError("Unknown result status")
         verify_pr(result, route, repo, branch, base_sha, config["gh"], profile)
         db.execute("UPDATE runs SET status=?, pr_url=? WHERE issue_id=?",
                    (result["status"], result["pr_url"], issue["id"]))
         db.commit()
+        status = result["status"]
         print(f"{issue['identifier']}: {result['status']} {result['pr_url']}", flush=True)
     except Exception as error:
         # Preserve all artifacts, including any PR that may already exist.
@@ -340,6 +386,16 @@ def run_issue(config, project_id, issue, runs, db, lock_fd=None):
             detail = detail.replace(key, "[REDACTED]")
         (folder / "failure.txt").write_text(f"{detail}\nInspect logs and remote PR before recovery\n")
         raise
+    finally:
+        try:
+            recorded_session = session_id(folder)
+        except OSError:
+            recorded_session = None
+        resume = (f"Resume the codex session: `codex resume {recorded_session}`"
+                  if recorded_session else "Codex session unavailable (no session ID recorded).")
+        body = (f"Run finished on {hostname} with status {status}. "
+                f"View pull request at {pr_url or 'unavailable (no PR URL recorded)'}. {resume}")
+        post_comment(issue["id"], body, folder, "finish")
 
 
 def cron_text(existing, line=None):
