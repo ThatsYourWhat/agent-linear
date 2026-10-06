@@ -342,10 +342,29 @@ def run_issue(config, project_id, issue, runs, db, lock_fd=None):
         raise
 
 
-def cron_text(existing, line):
+def cron_text(existing, line=None):
     marker = "# blank-agent-linear"
     kept = [row for row in existing.splitlines() if not row.endswith(marker)]
-    return "\n".join(kept + [line]) + "\n"
+    rows = kept + ([line] if line else [])
+    return "\n".join(rows) + ("\n" if rows else "")
+
+
+def uninstall_cron(runs):
+    current = subprocess.run(["crontab", "-l"], text=True, capture_output=True)
+    if current.returncode:
+        if current.returncode == 1 and "no crontab for" in current.stderr.lower():
+            print("Workflow cron job is not installed")
+            return
+        raise ValueError("Cannot read existing crontab; nothing was removed")
+    updated = cron_text(current.stdout)
+    if updated == current.stdout:
+        print("Workflow cron job is not installed")
+        return
+    (runs / "crontab.before-uninstall").write_text(current.stdout)
+    subprocess.run(["crontab", "-"], input=updated, text=True, check=True)
+    if any(row.endswith("# blank-agent-linear") for row in command(["crontab", "-l"]).splitlines()):
+        raise ValueError("Cron removal could not be verified")
+    print("Removed workflow cron job; other entries preserved. Running sessions continue.")
 
 
 def smoke_test(config):
@@ -373,7 +392,7 @@ def smoke_test(config):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["setup", "smoke-test", "poll", "run", "status", "cron-line", "install-cron"])
+    parser.add_argument("action", choices=["setup", "smoke-test", "poll", "run", "status", "cron-line", "install-cron", "uninstall-cron"])
     parser.add_argument("--config", type=Path, default=ROOT / "config.json")
     parser.add_argument("--issue-file", type=Path)
     parser.add_argument("--project")
@@ -393,6 +412,9 @@ def main():
         return
     runs = ROOT / ".runs"
     runs.mkdir(exist_ok=True)
+    if args.action == "uninstall-cron":
+        uninstall_cron(runs)
+        return
     # ponytail: one host-wide worker; use a shared lease before running on multiple hosts.
     with (runs / "worker.lock").open("a") as lock:
         try:

@@ -359,6 +359,52 @@ class RunnerTest(unittest.TestCase):
         self.assertIn("MAILTO=ops@example.com\n", merged)
         self.assertNotIn("old #", merged)
         self.assertEqual(runner.cron_text(merged, new), merged)
+        self.assertEqual(runner.cron_text(old), "MAILTO=ops@example.com\n0 0 * * * backup # backup\n")
+        self.assertEqual(runner.cron_text(new + "\n"), "")
+
+    def test_uninstall_cron_preserves_other_jobs_without_config_credentials_or_worker_lock(self):
+        existing = "MAILTO=ops@example.com\n0 0 * * * backup\n*/5 * * * * poll # blank-agent-linear\n"
+        updated = "MAILTO=ops@example.com\n0 0 * * * backup\n"
+        with tempfile.TemporaryDirectory() as temp, patch.object(runner, "ROOT", Path(temp)), \
+                patch.dict(os.environ, {}, clear=True), \
+                patch.object(runner.sys, "argv", ["runner.py", "uninstall-cron"]), \
+                patch.object(runner, "load_config") as config, \
+                patch.object(runner.fcntl, "flock") as lock, \
+                patch.object(runner.sqlite3, "connect") as database, \
+                patch.object(runner.subprocess, "run", side_effect=[
+                    subprocess.CompletedProcess(["crontab", "-l"], 0, stdout=existing, stderr=""),
+                    subprocess.CompletedProcess(["crontab", "-"], 0)]) as processes, \
+                patch.object(runner, "command", return_value=updated) as verify:
+            runner.main()
+            config.assert_not_called()
+            lock.assert_not_called()
+            database.assert_not_called()
+            self.assertEqual(processes.call_args.args[0], ["crontab", "-"])
+            self.assertEqual(processes.call_args.kwargs["input"], updated)
+            verify.assert_called_once_with(["crontab", "-l"])
+            self.assertEqual((Path(temp) / ".runs/crontab.before-uninstall").read_text(), existing)
+
+    def test_uninstall_cron_handles_absent_job_and_rejects_read_or_verification_failure(self):
+        responses = [(0, "0 0 * * * backup\n", "", False),
+                     (1, "", "no crontab for test", False),
+                     (1, "", "permission denied", True)]
+        for code, stdout, stderr, fails in responses:
+            with self.subTest(stderr=stderr), tempfile.TemporaryDirectory() as temp, \
+                    patch.object(runner.subprocess, "run", return_value=
+                                 subprocess.CompletedProcess(["crontab", "-l"], code, stdout, stderr)) as processes:
+                if fails:
+                    with self.assertRaisesRegex(ValueError, "nothing was removed"):
+                        runner.uninstall_cron(Path(temp))
+                else:
+                    runner.uninstall_cron(Path(temp))
+                self.assertEqual(processes.call_count, 1)
+        with tempfile.TemporaryDirectory() as temp, \
+                patch.object(runner.subprocess, "run", side_effect=[
+                    subprocess.CompletedProcess(["crontab", "-l"], 0, "poll # blank-agent-linear\n", ""),
+                    subprocess.CompletedProcess(["crontab", "-"], 0)]), \
+                patch.object(runner, "command", return_value="poll # blank-agent-linear"):
+            with self.assertRaisesRegex(ValueError, "removal could not be verified"):
+                runner.uninstall_cron(Path(temp))
 
     def test_fresh_session_isolation_pr_verification_and_no_duplicate_retry(self):
         with tempfile.TemporaryDirectory() as temp:

@@ -12,7 +12,6 @@ No live issue, PR, deployment, or cron job has been created by this setup.
 - [runner.py](runner.py): paginated Linear polling, fresh isolated checkouts,
   serial launches, persistent issue claims, and GitHub PR verification.
 - [result.schema.json](result.schema.json): acceptance evidence and final result.
-- [SOURCE-GAPS.md](SOURCE-GAPS.md): source conflicts, omissions, and adaptations.
 
 ## Use the directives now
 
@@ -183,7 +182,16 @@ Python/script/config paths plus the current PATH. Logs go to `.runs/cron.log`.
 Cron directly invokes the Python runner; no Bash wrapper is required. Install
 under the same OS user whose Codex/GitHub authentication and git signing setup
 will be used by scheduled sessions.
-Use `crontab -e` to remove only that marked line when disabling the worker.
+To stop future polling, run under the same OS user:
+
+```bash
+python3 runner.py uninstall-cron
+```
+
+It removes only this workflow's marked entry, preserves other jobs, saves the
+previous crontab to `.runs/crontab.before-uninstall`, and verifies removal.
+It works without project config or credentials and while a worker is active.
+Already-running sessions continue; re-enable polling with `install-cron`.
 Keep the host awake; cron does not replay missed ticks. Inspect logs and local
 status for failures; no outbound notification service is configured.
 
