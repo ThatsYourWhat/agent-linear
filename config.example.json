@@ -1,5 +1,7 @@
 {
+  "engine": "codex",
   "codex": "codex",
+  "opencode": "opencode",
   "gh": "gh",
   "projects": {
     "LINEAR-PROJECT-UUID": {

@@ -3,6 +3,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -19,6 +20,18 @@ ROUTE = {
     "require_signed_commits": True,
     "deployment": {"mode": "pr-only", "environment": "none", "instructions": "PR only"},
 }
+STATES = {"In Progress": "66666666-6666-4666-8666-666666666666",
+          "In Review": "77777777-7777-4777-8777-777777777777"}
+
+
+def linear_response(query, variables):
+    if "workflowStates(" in query:
+        return {"workflowStates": {"nodes": [{"id": value, "name": name} for name, value in STATES.items()],
+                                   "pageInfo": {"hasNextPage": False}}}
+    if "issueUpdate(" in query:
+        return {"issueUpdate": {"success": True, "issue": {"id": variables["id"],
+                                "state": {"id": variables["input"]["stateId"]}}}}
+    return {"commentCreate": {"success": True, "comment": {"id": ISSUE}}}
 
 
 def result(sha="a" * 40):
@@ -64,41 +77,48 @@ class RunnerTest(unittest.TestCase):
                     runner.verify_commits(Path("/tmp"), "a" * 40, profile)
 
     def test_smoke_test_checks_access_without_issue_work_or_scheduling(self):
-        with tempfile.TemporaryDirectory() as temp:
-            root = Path(temp)
-            repo = root / "repo"
-            repo.mkdir()
-            config = {"codex": "codex", "gh": "gh", "projects": {PROJECT: dict(ROUTE, repo_path=str(repo))}}
-            path = root / "config.json"
-            original = json.dumps(config)
-            path.write_text(original)
-            reads = {
-                ("git", "remote", "get-url", "origin"): "https://github.com/acme/widget.git",
-                ("codex", "login", "status"): "Logged in",
-                ("gh", "auth", "status", "--hostname", "github.com"): "Logged in",
-                ("gh", "repo", "view", "acme/widget", "--json", "viewerPermission"): '{"viewerPermission":"WRITE"}',
-                ("git", "ls-remote", "--exit-code", "origin", "refs/heads/staging"): "a" * 40 + "\trefs/heads/staging",
-            }
-            with patch.object(runner, "ROOT", root), \
-                    patch.object(runner.sys, "argv", ["runner.py", "smoke-test"]), \
-                    patch.dict(os.environ, {"LINEAR_API_KEY": "test-secret"}), \
-                    patch.object(runner.shutil, "which", return_value="/test/bin"), \
-                    patch.object(runner, "command", side_effect=lambda args, cwd=None: reads[tuple(args)]) as commands, \
-                    patch.object(runner, "git_profile", return_value={}) as profile, \
-                    patch.object(runner, "issues", return_value=[{"id": ISSUE}]) as api, \
-                    patch.object(runner, "run_issue") as launch, \
-                    patch.object(runner.sqlite3, "connect") as database, \
-                    patch.object(runner.subprocess, "run") as processes:
-                runner.main()
-                launch.assert_not_called()
-                database.assert_not_called()
-                processes.assert_not_called()
-                api.assert_called_once_with(PROJECT, config["projects"][PROJECT])
-                profile.assert_called_once_with(repo)
-                self.assertEqual(commands.call_count, len(reads))
-            self.assertFalse((root / ".runs").exists())
-            self.assertEqual(path.read_text(), original)
-            self.assertEqual(list(repo.iterdir()), [])
+        for engine in ("codex", "opencode"):
+            with tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                repo = root / "repo"
+                repo.mkdir()
+                config = {"codex": "codex", "gh": "gh", "projects": {PROJECT: dict(ROUTE, repo_path=str(repo))}}
+                if engine == "opencode":
+                    config.update(engine=engine, opencode="opencode", model="test/model")
+                path = root / "config.json"
+                original = json.dumps(config)
+                path.write_text(original)
+                reads = {
+                    ("git", "remote", "get-url", "origin"): "https://github.com/acme/widget.git",
+                    ("codex", "login", "status"): "Logged in",
+                    ("gh", "auth", "status", "--hostname", "github.com"): "Logged in",
+                    ("gh", "repo", "view", "acme/widget", "--json", "viewerPermission"): '{"viewerPermission":"WRITE"}',
+                    ("git", "ls-remote", "--exit-code", "origin", "refs/heads/staging"): "a" * 40 + "\trefs/heads/staging",
+                }
+                if engine == "opencode":
+                    del reads[("codex", "login", "status")]
+                    reads[("opencode", "auth", "list")] = "test provider"
+                    reads[("opencode", "models")] = "test/model"
+                with patch.object(runner, "ROOT", root), \
+                        patch.object(runner.sys, "argv", ["runner.py", "smoke-test"]), \
+                        patch.dict(os.environ, {"LINEAR_API_KEY": "test-secret"}), \
+                        patch.object(runner.shutil, "which", return_value="/test/bin"), \
+                        patch.object(runner, "command", side_effect=lambda args, cwd=None: reads[tuple(args)]) as commands, \
+                        patch.object(runner, "git_profile", return_value={}) as profile, \
+                        patch.object(runner, "issues", return_value=[{"id": ISSUE}]) as api, \
+                        patch.object(runner, "run_issue") as launch, \
+                        patch.object(runner.sqlite3, "connect") as database, \
+                        patch.object(runner.subprocess, "run") as processes:
+                    runner.main()
+                    launch.assert_not_called()
+                    database.assert_not_called()
+                    processes.assert_not_called()
+                    api.assert_called_once_with(PROJECT, config["projects"][PROJECT])
+                    profile.assert_called_once_with(repo)
+                    self.assertEqual(commands.call_count, len(reads))
+                self.assertFalse((root / ".runs").exists())
+                self.assertEqual(path.read_text(), original)
+                self.assertEqual(list(repo.iterdir()), [])
 
     def test_smoke_test_rejects_missing_key_tools_and_read_only_access(self):
         config = {"codex": "codex", "gh": "gh", "projects": {PROJECT: dict(ROUTE, repo_path="/tmp")}}
@@ -277,7 +297,7 @@ class RunnerTest(unittest.TestCase):
                 error = subprocess.CalledProcessError(128, ["git", "fetch", "origin", "staging"],
                                                      stderr="missing staging; test-secret")
                 with patch.object(runner, "command", side_effect=error), \
-                        patch.object(runner, "graphql", return_value={"commentCreate": {"success": True, "comment": {"id": ISSUE}}}), \
+                        patch.object(runner, "graphql", side_effect=linear_response), \
                         patch.dict(os.environ, {"LINEAR_API_KEY": "test-secret"}):
                     with self.assertRaises(subprocess.CalledProcessError):
                         runner.run_issue(config, PROJECT, issue, runs, db)
@@ -354,7 +374,8 @@ class RunnerTest(unittest.TestCase):
 
     def test_run_comments_report_outcome_session_and_delivery_failures(self):
         session = "77777777-7777-4777-8777-777777777777"
-        for outcome in ("blocked", "failed", "process-error", "start-error", "finish-error"):
+        for outcome in ("ready", "blocked", "failed", "process-error", "start-error", "finish-error",
+                        "start-state-error", "review-state-error", "verification-error", "missing-state"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temp:
                 runs = Path(temp)
                 db = sqlite3.connect(":memory:")
@@ -364,14 +385,32 @@ class RunnerTest(unittest.TestCase):
                          "project": {"id": PROJECT}, "team": {"id": ROUTE["team_id"]},
                          "state": {"id": ROUTE["ready_state_id"]}}
                 config = {"codex": "test-codex", "gh": "test-gh", "projects": {PROJECT: dict(ROUTE, repo_path=temp)}}
-                launched, comments = [], []
+                launched, comments, transitions = [], [], []
 
                 def api(query, variables):
+                    if "workflowStates(" in query:
+                        self.assertEqual(variables["team"], ROUTE["team_id"])
+                        response = linear_response(query, variables)
+                        if outcome == "missing-state":
+                            response["workflowStates"]["nodes"].pop()
+                        return response
+                    if "issueUpdate(" in query:
+                        self.assertEqual(variables["id"], ISSUE)
+                        state = variables["input"]["stateId"]
+                        transitions.append(state)
+                        if state == STATES["In Progress"]:
+                            self.assertFalse(launched)
+                        else:
+                            self.assertTrue(launched)
+                            verification.assert_called_once()
+                        if outcome == "start-state-error" or outcome == "review-state-error" and state == STATES["In Review"]:
+                            raise runner.urllib.error.URLError("test-secret")
+                        return linear_response(query, variables)
                     self.assertIn("commentCreate(input: $input)", query)
                     self.assertEqual(variables["input"]["issueId"], ISSUE)
                     self.assertNotIn("test-secret", variables["input"]["body"])
                     comments.append(variables["input"]["body"])
-                    if len(comments) == 1:
+                    if len(comments) == 1 and outcome != "missing-state":
                         self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], "running")
                         self.assertFalse(launched)
                     if outcome == "start-error" and len(comments) == 1:
@@ -381,13 +420,14 @@ class RunnerTest(unittest.TestCase):
                     return {"commentCreate": {"success": True, "comment": {"id": ISSUE}}}
 
                 def process(args, **kwargs):
+                    self.assertEqual(transitions, [STATES["In Progress"]])
                     launched.append(args)
                     kwargs["stdout"].write('{partial\n[]\n{"type":"thread.started","thread_id":"invalid"}\n' +
                                            json.dumps({"type": "thread.started", "thread_id": session}) + "\n{partial")
                     if outcome == "process-error":
                         raise subprocess.CalledProcessError(1, args)
                     report = result()
-                    report["status"] = "blocked" if outcome == "finish-error" else outcome
+                    report["status"] = "blocked" if outcome == "finish-error" else "ready" if outcome in ("review-state-error", "verification-error") else outcome
                     Path(args[args.index("--output-last-message") + 1]).write_text(json.dumps(report))
                     return subprocess.CompletedProcess(args, 0)
 
@@ -395,34 +435,87 @@ class RunnerTest(unittest.TestCase):
                         patch.object(runner.socket, "gethostname", return_value="worker-host"), \
                         patch.object(runner, "git_profile", return_value={"user.name": "Test", "user.email": "test@example.com"}), \
                         patch.object(runner, "command", return_value=""), \
-                        patch.object(runner, "verify_pr"), \
+                        patch.object(runner, "verify_pr", side_effect=ValueError("Invalid PR") if outcome == "verification-error" else None) as verification, \
                         patch.object(runner.subprocess, "run", side_effect=process), \
                         patch.dict(os.environ, {"LINEAR_API_KEY": "test-secret"}):
-                    if outcome in ("start-error", "process-error"):
-                        with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                    if outcome in ("start-error", "process-error", "start-state-error", "review-state-error", "verification-error", "missing-state"):
+                        with self.assertRaises((ValueError, subprocess.CalledProcessError, runner.urllib.error.URLError)):
                             runner.run_issue(config, PROJECT, issue, runs, db)
                     else:
                         runner.run_issue(config, PROJECT, issue, runs, db)
                     runner.run_issue(config, PROJECT, issue, runs, db)
-                expected = "blocked" if outcome == "finish-error" else "failed" if outcome.endswith("error") else outcome
+                expected = "blocked" if outcome == "finish-error" else "failed" if outcome.endswith("error") or outcome == "missing-state" else outcome
                 self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], expected)
+                expected_transitions = [] if outcome in ("start-error", "missing-state") else [STATES["In Progress"]]
+                if outcome in ("ready", "review-state-error"):
+                    expected_transitions.append(STATES["In Review"])
+                self.assertEqual(transitions, expected_transitions)
+                if outcome == "missing-state":
+                    self.assertFalse(launched)
+                    self.assertEqual(len(comments), 1)
+                    self.assertIn("with status failed.", comments[0])
+                    self.assertTrue((runs / ISSUE / "finish-comment.json").exists())
+                    continue
                 self.assertEqual(len(comments), 2)
                 self.assertEqual(comments[0], "Run claimed on worker-host. Starting work on APP-1.")
                 self.assertIn(f"Run finished on worker-host with status {expected}.", comments[1])
-                if outcome == "start-error":
+                if outcome in ("start-error", "start-state-error"):
                     self.assertFalse(launched)
                     self.assertNotIn("codex resume", comments[1])
                 else:
-                    self.assertIn(f"Resume the codex session: `codex resume {session}`", comments[1])
-                if outcome not in ("start-error", "process-error"):
+                    self.assertIn(f"Resume the codex session: `test-codex resume {session}`", comments[1])
+                if outcome not in ("start-error", "start-state-error", "process-error"):
                     self.assertEqual(comments[1], f"Run finished on worker-host with status {expected}. "
-                                     f"View pull request at {result()['pr_url']}. Resume the codex session: `codex resume {session}`")
+                                     f"View pull request at {result()['pr_url']}. Resume the codex session: `test-codex resume {session}`")
                 folder = runs / ISSUE
                 if outcome == "finish-error":
                     self.assertEqual((folder / "finish-comment-error.txt").read_text(), "URLError\n")
                     self.assertFalse((folder / "failure.txt").exists())
                 else:
                     self.assertTrue((folder / "finish-comment.json").exists())
+
+    def test_workflow_states_require_unique_exact_team_statuses(self):
+        valid = linear_response("workflowStates(", {})
+        for variant in ("valid", "missing", "duplicate", "wrong-case", "more-pages"):
+            response = copy.deepcopy(valid)
+            page = response["workflowStates"]
+            if variant == "missing":
+                page["nodes"].pop()
+            elif variant == "duplicate":
+                page["nodes"].append(dict(page["nodes"][0], id=ISSUE))
+            elif variant == "wrong-case":
+                page["nodes"][0]["name"] = "in progress"
+            elif variant == "more-pages":
+                page["pageInfo"]["hasNextPage"] = True
+            with self.subTest(variant=variant), patch.object(runner, "graphql", return_value=response) as api:
+                if variant == "valid":
+                    self.assertEqual(runner.workflow_states(ROUTE["team_id"]), STATES)
+                else:
+                    with self.assertRaisesRegex(ValueError, "requires exactly one"):
+                        runner.workflow_states(ROUTE["team_id"])
+                self.assertEqual(api.call_args.args[1], {"team": ROUTE["team_id"], "names": list(STATES)})
+                self.assertIn("team: {id: {eq: $team}}", api.call_args.args[0])
+
+    def test_state_update_requires_confirmation_and_retains_evidence_without_retry(self):
+        variables = {"id": ISSUE, "input": {"stateId": STATES["In Progress"]}}
+        valid = linear_response("issueUpdate(", variables)["issueUpdate"]
+        invalid = [dict(valid, success=False), dict(valid, issue=None),
+                   dict(valid, issue={"id": PROJECT, "state": valid["issue"]["state"]}),
+                   dict(valid, issue={"id": ISSUE, "state": {"id": STATES["In Review"]}})]
+        for response in [valid, *invalid]:
+            with self.subTest(response=response), tempfile.TemporaryDirectory() as temp, \
+                    patch.object(runner, "graphql", return_value={"issueUpdate": response}) as api:
+                folder = Path(temp)
+                if response == valid:
+                    runner.update_issue_state(ISSUE, STATES["In Progress"], folder, "start")
+                    self.assertEqual(json.loads((folder / "start-state.json").read_text()), valid)
+                else:
+                    with self.assertRaisesRegex(ValueError, "status update was not confirmed"):
+                        runner.update_issue_state(ISSUE, STATES["In Progress"], folder, "start")
+                    self.assertFalse((folder / "start-state.json").exists())
+                api.assert_called_once()
+                self.assertEqual(api.call_args.args[1], variables)
+                self.assertEqual(json.loads((folder / "start-state-request.json").read_text()), variables)
 
     def test_cron_preserves_unrelated_entries_and_replaces_only_own_job(self):
         old = "MAILTO=ops@example.com\n0 0 * * * backup # backup\nold # blank-agent-linear\n"
@@ -479,126 +572,93 @@ class RunnerTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "removal could not be verified"):
                 runner.uninstall_cron(Path(temp))
 
-    def test_fresh_session_isolation_pr_verification_and_no_duplicate_retry(self):
+    def test_both_engines_complete_a_signed_pr_and_do_not_repeat_work(self):
+        for engine in ("codex", "opencode"):
+            with self.subTest(engine=engine):
+                self.run_agent_fixture(engine, "ready")
+
+    def test_failed_runs_never_move_to_review_or_retry(self):
+        for engine, outcome in (("codex", "invalid-report"), ("opencode", "invalid-report"),
+                                ("opencode", "malformed"), ("opencode", "incomplete"),
+                                ("opencode", "error-event"), ("opencode", "process-error"),
+                                ("opencode", "wrong-pr")):
+            with self.subTest(engine=engine, outcome=outcome):
+                self.run_agent_fixture(engine, outcome)
+
+    def run_agent_fixture(self, engine, outcome):
         with tempfile.TemporaryDirectory() as temp:
-            source = Path(temp) / "source"
+            root = Path(temp)
+            source = root / "source"
             source.mkdir()
             git = lambda *args: runner.command(["git", *args], source)
             git("init", "-b", "staging")
-            # Identity is scoped only to this throwaway test fixture.
             git("config", "user.name", "Test")
             git("config", "user.email", "test@example.com")
             git("config", "commit.gpgsign", "false")
             (source / "app.txt").write_text("original\n")
             git("add", "app.txt")
             git("commit", "-m", "Initial")
-            base = git("rev-parse", "HEAD")
-            key = Path(temp) / "signing"
-            other_key = Path(temp) / "other-signing"
-            for signing_key in (key, other_key):
-                runner.command(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(signing_key)])
-            allowed = Path(temp) / "allowed-signers"
-            allowed.write_text("".join("test@example.com " + Path(str(k) + ".pub").read_text()
-                                       for k in (key, other_key)))
+            key = root / "signing"
+            runner.command(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)])
+            allowed = root / "allowed-signers"
+            allowed.write_text("test@example.com " + key.with_suffix(".pub").read_text())
             git("config", "gpg.format", "ssh")
             git("config", "user.signingkey", str(key) + ".pub")
-            git("config", "gpg.ssh.allowedSignersFile", "../allowed-signers")
-            profile = runner.git_profile(source)
+            git("config", "gpg.ssh.allowedSignersFile", str(allowed))
             (source / "app.txt").write_text("human uncommitted work\n")
-            runs = Path(temp) / "runs"
+            binary = root / engine
+            shutil.copyfile(runner.ROOT / "fixtures/agent.py", binary)
+            binary.chmod(0o700)
+            (root / "fixture.json").write_text(json.dumps({"engine": engine, "outcome": outcome, "report": result()}))
+            runs = root / "runs"
             runs.mkdir()
-            db = sqlite3.connect(runs / "state.sqlite3")
-            db.execute("CREATE TABLE runs (issue_id TEXT PRIMARY KEY, identifier TEXT, status TEXT, folder TEXT, pr_url TEXT)")
-            route = dict(ROUTE, repo_path=str(source))
-            config = {"codex": "test-codex", "gh": "test-gh", "projects": {PROJECT: route}}
+            config = {"engine": engine, engine: str(binary), "model": "test/model", "gh": "test-gh",
+                      "projects": {PROJECT: dict(ROUTE, repo_path=str(source))}}
             issue = {"id": ISSUE, "identifier": "APP-1", "title": "Handle input", "description": "Reject empty input",
                      "project": {"id": PROJECT}, "team": {"id": ROUTE["team_id"]},
-                     "state": {"id": ROUTE["ready_state_id"]}, "url": "https://linear.app/acme/issue/APP-1"}
+                     "state": {"id": ROUTE["ready_state_id"]}}
             real_command = runner.command
-            real_run = subprocess.run
-            launches = []
-            wrong_pr = False
 
             def commands(args, cwd=None):
                 if args[:4] == ["git", "remote", "get-url", "origin"]:
                     return "https://github.com/acme/widget.git"
                 if args[:4] == ["git", "remote", "set-url", "origin"]:
-                    return ""  # Keep this fixture's fetch local; no network is used.
+                    return ""  # Fetch from the local fixture, never GitHub.
                 if args[0] == "test-gh":
-                    sha = real_command(["git", "rev-parse", "HEAD"], cwd)
                     return json.dumps({"url": result()["pr_url"], "state": "OPEN", "isDraft": False,
-                                       "baseRefName": "main" if wrong_pr else "staging",
-                                       "headRefName": "linear-app-1-" + ISSUE[:8], "headRefOid": sha,
+                                       "baseRefName": "main" if outcome == "wrong-pr" else "staging",
+                                       "headRefName": "linear-app-1-" + ISSUE[:8],
+                                       "headRefOid": real_command(["git", "rev-parse", "HEAD"], cwd),
                                        "isCrossRepository": False})
                 return real_command(args, cwd)
 
-            def processes(args, **kwargs):
-                if args[0] != "test-codex":
-                    return real_run(args, **kwargs)
-                launches.append(args)
-                self.assertNotIn("LINEAR_API_KEY", kwargs["env"])
-                self.assertEqual(kwargs["env"]["GIT_AUTHOR_NAME"], "Test")
-                self.assertEqual(kwargs["env"]["GIT_AUTHOR_EMAIL"], "test@example.com")
-                self.assertNotIn("resume", args)
-                self.assertIn("--sandbox", args)
-                self.assertIn("workspace-write", args)
-                self.assertIn(issue["description"], kwargs["input"])
-                repo = Path(kwargs["cwd"])
-                self.assertEqual((repo / "app.txt").read_text(), "original\n")
-                (repo / "app.txt").write_text("feature\n")
-                env = kwargs["env"]
-                real_run(["git", "add", "app.txt"], cwd=repo, check=True)
-                real_run(["git", "commit", "-S", "-m", "Handle input"],
-                         cwd=repo, env=env, check=True, capture_output=True)
-                sha = real_command(["git", "rev-parse", "HEAD"], repo)
-                kwargs["stdout"].write(json.dumps({"type": "thread.started", "thread_id": PROJECT}) + "\n")
-                Path(args[args.index("--output-last-message") + 1]).write_text(json.dumps(result(sha)))
-                return subprocess.CompletedProcess(args, 0)
-
-            with patch.object(runner, "command", side_effect=commands), \
-                    patch.object(runner, "graphql", return_value={"commentCreate": {"success": True, "comment": {"id": ISSUE}}}) as comments, \
-                    patch.object(runner.socket, "gethostname", return_value="worker-host"), \
-                    patch.object(runner.subprocess, "run", side_effect=processes), \
-                    patch.dict(os.environ, {"LINEAR_API_KEY": "test-secret", "GIT_AUTHOR_NAME": "Wrong",
-                                            "GIT_AUTHOR_EMAIL": "wrong@example.com"}):
-                runner.run_issue(config, PROJECT, issue, runs, db)
-                runner.run_issue(config, PROJECT, issue, runs, db)
-                self.assertEqual(len(launches), 1)
-                self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], "ready")
-                self.assertEqual(comments.call_count, 2)
-                self.assertEqual(comments.call_args.args[1]["input"]["body"],
-                                 f"Run finished on worker-host with status ready. View pull request at {result()['pr_url']}. "
-                                 f"Resume the codex session: `codex resume {PROJECT}`")
-                folder = runs / ISSUE
-                report = json.loads((folder / "result.json").read_text())
-                checkout = folder / "repo"
-                self.assertEqual(real_command(["git", "config", "--get", "user.signingkey"], checkout), str(key) + ".pub")
-                self.assertEqual(real_command(["git", "config", "--get", "gpg.ssh.allowedSignersFile"], checkout), str(allowed))
-                for options, message in ((["--no-gpg-sign"], "verified good signatures"),
-                                         (["-S", "--author", "Other <other@example.com>"], "authors"),
-                                         (["-S" + str(other_key) + ".pub"], "signing key")):
-                    env = dict(os.environ, GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.com",
-                               GIT_COMMITTER_NAME="Test", GIT_COMMITTER_EMAIL="test@example.com")
-                    real_run(["git", "commit", *options, "--allow-empty", "-m", "Rejected fixture"],
-                             cwd=checkout, env=env, check=True, capture_output=True)
-                    with self.assertRaisesRegex(ValueError, message):
-                        runner.verify_commits(checkout, base, profile)
-                    real_command(["git", "reset", "--hard", report["commit_sha"]], checkout)
-                wrong_pr = True
-                with self.assertRaisesRegex(ValueError, "GitHub PR does not match"):
-                    runner.verify_pr(report, route, folder / "repo", "linear-app-1-" + ISSUE[:8], base, "test-gh", profile)
-                next_issue = dict(issue, id="55555555-5555-4555-8555-555555555555", identifier="APP-2")
-                with self.assertRaisesRegex(ValueError, "GitHub PR does not match"):
-                    runner.run_issue(config, PROJECT, next_issue, runs, db)
-                runner.run_issue(config, PROJECT, next_issue, runs, db)
-                self.assertEqual(len(launches), 2)
-                self.assertEqual(db.execute("SELECT status FROM runs WHERE issue_id=?", (next_issue["id"],)).fetchone()[0], "failed")
-                self.assertTrue((runs / next_issue["id"] / "failure.txt").exists())
-                self.assertEqual(comments.call_count, 4)
-                self.assertIn("with status failed.", comments.call_args.args[1]["input"]["body"])
-            self.assertEqual((source / "app.txt").read_text(), "human uncommitted work\n")
-            self.assertEqual(git("rev-parse", "HEAD"), base)
-            db.close()
+            db = sqlite3.connect(":memory:")
+            try:
+                db.execute("CREATE TABLE runs (issue_id TEXT PRIMARY KEY, identifier TEXT, status TEXT, folder TEXT, pr_url TEXT)")
+                with patch.object(runner, "command", side_effect=commands), \
+                        patch.object(runner, "graphql", side_effect=linear_response) as api, \
+                        patch.dict(os.environ, {"LINEAR_API_KEY": "test-secret"}):
+                    if outcome == "ready":
+                        runner.run_issue(config, PROJECT, issue, runs, db)
+                    else:
+                        with self.assertRaises((ValueError, subprocess.CalledProcessError)):
+                            runner.run_issue(config, PROJECT, issue, runs, db)
+                    calls = api.call_count
+                    runner.run_issue(config, PROJECT, issue, runs, db)
+                    self.assertEqual(api.call_count, calls)
+                expected = "ready" if outcome == "ready" else "failed"
+                self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], expected)
+                transitions = [call.args[1]["input"]["stateId"] for call in api.call_args_list if "issueUpdate(" in call.args[0]]
+                self.assertEqual(transitions, list(STATES.values()) if outcome == "ready" else [STATES["In Progress"]])
+                comment = (runs / ISSUE / "finish-comment.txt").read_text()
+                self.assertIn(f"status {expected}.", comment)
+                self.assertIn("--session ses_test123" if engine == "opencode" else f"resume {PROJECT}", comment)
+                self.assertEqual(json.loads((runs / ISSUE / "context.json").read_text())["engine"], engine)
+                self.assertEqual((source / "app.txt").read_text(), "human uncommitted work\n")
+                if outcome != "ready":
+                    self.assertTrue((runs / ISSUE / "failure.txt").exists())
+            finally:
+                db.close()
 
 
 if __name__ == "__main__":

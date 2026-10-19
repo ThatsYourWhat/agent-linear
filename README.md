@@ -1,6 +1,6 @@
 # Single agent for Linear issues
 
-One fresh Codex CLI session handles one issue through all six source roles.
+One fresh Codex or OpenCode CLI session handles one issue through all six source roles.
 Feature PRs always target **`staging`**. Linear integration and local cron
 activation are deferred until the owner configures project routes. The Linear
 API key is supplied through the local `LINEAR_API_KEY` environment variable.
@@ -35,7 +35,7 @@ A single session's self-review does not replace independent review on the PR.
 
 ## Configure later
 
-Needs Linux, Python 3, git, authenticated Codex CLI, authenticated GitHub CLI,
+Needs Linux, Python 3, git, an authenticated Codex or OpenCode CLI, authenticated GitHub CLI,
 access to each GitHub repository, and its remote `staging` branch. Every feature
 commit must use the local Git profile's author and signing key. The runner reads
 effective `user.name`, `user.email`, `user.signingkey`, and signing settings from
@@ -64,8 +64,11 @@ Supply the Linear API key through the local `LINEAR_API_KEY` environment variabl
 The runner does not load credential files. Credentials are not stored in config,
 issue snapshots, prompts, or the state database, and the Linear key is removed
 from the agent's environment. The runner posts claim and finish comments through
-Linear's API; the key must allow comment creation. It does not change issue status
-or assignment. Smoke tests and dry runs remain read-only against Linear.
+Linear's API and changes issue status; the key must allow comment creation,
+workflow-state reads, and issue updates. Assignment stays unchanged. Each routed
+team must have exactly one status named `In Progress` and one named `In Review`.
+The runner resolves these by name within that team; no new config is needed.
+Smoke tests and dry runs remain read-only against Linear.
 
 All projects use `pr-only` with environment `none`; the runner rejects preview
 and direct deployment policies. The agent creates a PR into `staging`, then
@@ -73,6 +76,52 @@ DevOps documents release requirements for the owner. The agent does not merge
 or deploy. Deploy-dependent acceptance criteria remain blocked for owner
 release/verification. Existing repository CI may run automatically on a PR;
 that does not authorize the agent to trigger a separate deployment.
+
+## Choose the CLI
+
+Codex is the default, including for existing configs without `engine`. To use
+OpenCode, set these top-level fields in `config.json`, alongside the existing
+`gh` and `projects` fields:
+
+```json
+{
+  "engine": "opencode",
+  "opencode": "/home/noah/.opencode/bin/opencode",
+  "model": "provider/model"
+}
+```
+
+Replace `provider/model` with an entry from `opencode models`. `model` is optional;
+when omitted, the selected CLI uses its own default. Set `engine` back to `codex`
+to use the existing `codex` executable setting. Remove or change `model` when
+switching engines because their model names may differ. Each poll uses the
+configured engine for all project routes; changing it never retries claimed issues.
+The cron entry itself does not change. Prefer absolute executable paths for cron.
+
+Configure provider access once as the OS user that runs cron (`opencode auth login`
+for OpenCode). The cron process must have access to that user's credentials,
+signing agent/key, and any required provider environment variables. Do not put
+API keys in this runner's config. `smoke-test` checks Codex login status, or reads
+OpenCode's credential/model inventory and checks an explicitly selected model.
+An OpenCode inventory check does not prove a provider accepts requests; that
+requires a live model run. Neither smoke test launches issue work.
+
+OpenCode support uses `opencode run --format json` with the prompt on stdin,
+verified against version 1.18.14. The runner extracts the final completed text
+from its events into `result.json`; both engines' reports must match
+`result.schema.json` before PR verification. Missing, malformed, interrupted,
+or error results fail the run. No engine fallback or automatic retry occurs.
+
+The runner gives OpenCode a per-run `linear-issue` agent: shell work is allowed,
+subagents and questions are denied, and edits are restricted to the checkout
+and scratch directory. Prior lesson files are readable. Permission prompts are
+automatically rejected in noninteractive mode; the runner does not use `--auto`.
+Sharing and automatic updates are disabled for the run. The settings are saved
+as `opencode.json` in scratch for recovery. Native provider configuration is
+still loaded; the runner supplies its own `OPENCODE_CONFIG_CONTENT` overrides.
+These are OpenCode tool permissions, **not an OS filesystem sandbox**. Shell
+commands run with the cron user's access. Use an isolated OS account/container
+if OS-level confinement is required. Codex retains its `workspace-write` sandbox.
 
 ## Verify and run
 
@@ -87,7 +136,7 @@ python3 runner.py smoke-test
 ```
 
 `smoke-test` validates the configuration/local origins and PR-only policy,
-checks git/crontab/Codex/GitHub executables, saved CLI authentication, GitHub write
+checks git/crontab/selected-agent/GitHub executables, CLI preflight, GitHub write
 permission, read access to each remote `staging` branch, Git profile/key resolution,
 and the filtered Linear queues. It prints counts instead of issue bodies.
 It does not launch an agent, claim issues, create SQLite state, change product
@@ -105,12 +154,12 @@ python3 runner.py status
 ```
 
 `--dry-run` queries Linear and reports eligible/previously claimed issues. It
-does not start Codex, clone, push, create a PR, or deploy. It creates only the
+does not start an agent, clone, push, create a PR, or deploy. It creates only the
 local lock/state files. Real polling refreshes each issue immediately before
 launching, so a withdrawn ready label/state does not start stale work.
 
 For a saved issue snapshot, the same launcher can run with Linear access for
-claim and finish comments:
+claim/finish comments and status updates:
 
 ```bash
 python3 runner.py run --project REAL_PROJECT_UUID --issue-file /absolute/path/issue.json --dry-run
@@ -120,22 +169,36 @@ python3 runner.py run --project REAL_PROJECT_UUID --issue-file /absolute/path/is
 The snapshot uses Linear's `id`, `identifier`, `title`, `description`, `url`,
 and nested `project.id`, `team.id`, `state.id`. Supply the full body and linked
 dependency context. Saved snapshots are deliberate manual inputs, not refreshed
-from Linear. A live target session still needs Codex/GitHub/network access.
+from Linear. A live target session still needs access to the selected CLI, its provider, and GitHub.
 
-After the local claim is committed, the runner posts
+After the local claim is committed, the runner resolves both team statuses, then posts
 `Run claimed on HOSTNAME. Starting work on IDENTIFIER.` before cloning or launching
-Codex. If that comment cannot be confirmed, the run fails without starting feature
-work. The comment announces ownership; SQLite remains the local duplicate guard,
+the agent. If that comment cannot be confirmed, the run fails without starting feature
+work. It then changes the issue to **In Progress**, confirming the returned issue
+and status IDs before cloning or launching the agent. Missing/ambiguous statuses or
+an unconfirmed start update fail the run before feature work starts.
+The comment announces ownership; SQLite remains the local duplicate guard,
 and the comment is not a lock across machines.
 
-After saving the final outcome and verifying any `ready` result, the runner posts:
+After verifying a `ready` result (including its PR and signed commits), the runner
+changes the issue to **In Review** before recording `ready`. Blocked, failed, and
+invalid completion results do not trigger this transition. An unconfirmed review
+update fails the run and preserves the result/PR for manual recovery. Failed or
+blocked work otherwise stays In Progress; the runner never moves issues to Done.
+Status mutation requests and confirmed responses are retained as `start-state*`
+and `finish-state*` in scratch. No mutations are automatically retried; inspect
+Linear before recovering from a timeout, which may have applied the update.
+
+After saving the final outcome, the runner posts:
 
 ```text
 Run finished on <hostname> with status <run status>. View pull request at <GitHub PR URL>. Resume the codex session: `codex resume <codex session id>`
 ```
 
-Statuses are `ready`, `blocked`, or `failed`. The session UUID comes from Codex's
-`thread.started` JSONL event, not the agent's report. Resume on the named machine
+Statuses are `ready`, `blocked`, or `failed`. Session IDs come from CLI events:
+Codex's `thread.started.thread_id` or OpenCode's `sessionID`, not the agent report.
+For OpenCode, the comment supplies `opencode --session ses_...` with the saved
+`OPENCODE_CONFIG_CONTENT` permissions. The executable path follows the run's config. Resume on the named machine
 under the original OS user, from `.runs/ISSUE_UUID/repo`. When no PR URL is recorded,
 the comment says it is unavailable; when no session ID is recorded, it omits the
 resume command and explains that the session is unavailable. A finish-comment
@@ -143,7 +206,8 @@ failure preserves the run outcome and logs delivery evidence in the issue's
 scratch directory. Comment bodies, confirmed IDs, and delivery errors are retained
 as `start-comment.*` and `finish-comment.*`. There are no automatic mutation retries:
 after a timeout, check Linear before manually reposting. A killed runner may leave
-only a start comment. A normal run adds two API requests for these comments.
+only a start comment. A successful run adds five Linear API requests: one status
+lookup, two status updates, and two comments.
 
 Every issue is claimed in `.runs/state.sqlite3` before external work starts.
 The existing repository is cloned with separate git metadata; only committed
@@ -156,7 +220,7 @@ commit's raw author, signature validity, and signing-key fingerprint against the
 profile captured before launch. A valid signature from another key is rejected.
 The agent checks the same requirements before pushing.
 
-The process holds a nonblocking `flock` for the entire tick; the Codex child
+The process holds a nonblocking `flock` for the entire tick; the agent child
 inherits the lock descriptor, so an orphaned session retains the worker lock.
 This is a **single-host** queue. Do not run another installation against the
 same issues: local claims do not coordinate multiple machines.
@@ -206,7 +270,7 @@ crontab, backs it up at `.runs/crontab.before`, and replaces only its marked
 `# blank-agent-linear` entry. It preserves other entries and uses absolute
 Python/script/config paths plus the current PATH. Logs go to `.runs/cron.log`.
 Cron directly invokes the Python runner; no Bash wrapper is required. Install
-under the same OS user whose Codex/GitHub authentication and git signing setup
+under the same OS user whose agent/provider and GitHub authentication and git signing setup
 will be used by scheduled sessions.
 To stop future polling, run under the same OS user:
 
@@ -224,31 +288,33 @@ status for failures; Linear comments provide per-run notifications.
 ## Evidence and recovery
 
 `.runs/ISSUE_UUID/` retains issue/context/prompt snapshots, product checkout,
-Codex JSONL events, stderr, final structured result, worklog/lessons, and failure
+agent JSONL events, selected engine/model, stderr, final structured result, worklog/lessons, and failure
 information. It is ignored by git and created private to the current user.
 Do not commit it. Retain it until review/deployment is finished, then archive or
 remove it deliberately; there is no automatic cleanup.
 
 Blocked, failed, and interrupted claims are **never retried by cron**, even if
 the issue body changes. A `running` database row is a claim, not proof of a live
-process: inspect the event stream/session ID and current Codex process/session
+process: inspect the event stream/session ID and current agent process/session
 before deciding it died. For recovery, inspect the checkout and actual remote
 branch/PR first. Continue that issue's recorded session with the original
 checkout/context if appropriate; never `resume --last` into a different issue.
 Reconcile the result/PR before any operator-approved reset. This version leaves
 recovery manual; deleting state to force retries can duplicate external work.
 
-The tests exercise a real throwaway git repository with simulated Codex/GitHub
+The tests exercise a real throwaway git repository with executable Codex/OpenCode fixtures and simulated GitHub
 responses, plus pagination, API errors, completion gates, signing rejection,
 duplicate suppression, failed-run retention, crontab preservation, and the smoke
 test's lack of issue-work/scheduling effects. They also cover claim/finish comments,
-recorded session IDs, and notification failures without changing run outcomes.
-They do not prove live Linear auth or comment delivery,
+recorded session IDs, status transitions and failures, and notification failures
+without changing run outcomes. They do not prove live Linear auth, status updates, or comment delivery,
 model behavior, real GitHub delivery, or cron execution. The first live check
 is only the smoke test; model/signing/issue-to-PR and scheduled execution evidence
 can be collected later when feature processing is authorized. Deployment is
 outside this workflow.
 
 Reference: [official Codex non-interactive documentation](https://developers.openai.com/codex/noninteractive),
+[OpenCode CLI](https://opencode.ai/docs/cli/),
+[OpenCode permissions](https://opencode.ai/docs/permissions/),
 [Linear GraphQL authentication/errors](https://linear.app/developers/graphql),
 and [Linear filtering](https://linear.app/developers/filtering).
