@@ -171,6 +171,11 @@ func (r *runner) cli() *cobra.Command {
 		}
 		root.AddCommand(cmd)
 	}
+	root.AddCommand(&cobra.Command{
+		Use: "install-skill <repository>", Short: "Install the ad hoc progressive-issue skill in another Git checkout",
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error { return r.installSkill(args[0]) },
+	})
 	return root
 }
 

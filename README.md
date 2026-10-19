@@ -12,6 +12,41 @@ No live issue, PR, deployment, or cron job has been created by this setup.
 - [main.go](main.go): paginated Linear polling, fresh isolated checkouts,
   serial launches, persistent issue claims, and GitHub PR verification.
 - [result.schema.json](result.schema.json): acceptance evidence and final result.
+- [.agents/skills/progressive-issue/SKILL.md](.agents/skills/progressive-issue/SKILL.md):
+  standalone progressive-role workflow for ad hoc issue work.
+
+## Ad hoc issue skill
+
+Use `progressive-issue` for issue work in a normal agent session. It walks one
+agent through CEO intake, Architect, Security design, Builder, Security review,
+QA, delivery, DevOps handoff, and CEO closure. It uses the target repository's
+instructions and the user's delivery scope; it grants no additional permission
+to commit, push, change issue status, or deploy.
+
+After building, install the same skill into another Git checkout:
+
+```bash
+mise run build
+./agent-linear install-skill /absolute/path/to/another-repo
+```
+
+The destination must be the checkout root (linked worktrees are supported).
+The command writes only `.agents/skills/progressive-issue/SKILL.md`, creates its
+parent directories if needed, and preserves existing directives and other skills.
+An identical installation is left untouched; a different existing skill or a
+symlink destination is rejected. Review customized copies before replacing them.
+The skill is embedded in the executable: rebuild after editing its source, and
+the installer works without access to this source checkout.
+
+In an agent session that supports repository skills, invoke:
+
+```text
+Use $progressive-issue to implement this issue: [issue description or link].
+```
+
+The skill is self-contained. Installing or using it requires no project routing
+configuration, Linear credentials, runner state, or scheduled job. It does not
+install cron, copy `AGENT.md`, or impose the runner's `staging`/PR-only policy.
 
 ## Use the directives now
 
