@@ -1,0 +1,12 @@
+[tools]
+go = "1.27"
+
+[tasks.build]
+env = { CGO_ENABLED = "0" }
+run = "go build -o agent-linear ."
+
+[tasks.test]
+run = "go test -race ./..."
+
+[tasks.check]
+run = "go vet ./..."

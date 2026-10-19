@@ -9,7 +9,7 @@ No live issue, PR, deployment, or cron job has been created by this setup.
 - [AGENT.md](AGENT.md): reusable, sequential agent directives.
 - [config.example.json](config.example.json): trusted Linear-project → repository
   mapping and deployment authority. Multiple projects may use the same agent.
-- [runner.py](runner.py): paginated Linear polling, fresh isolated checkouts,
+- [main.go](main.go): paginated Linear polling, fresh isolated checkouts,
   serial launches, persistent issue claims, and GitHub PR verification.
 - [result.schema.json](result.schema.json): acceptance evidence and final result.
 
@@ -35,8 +35,9 @@ A single session's self-review does not replace independent review on the PR.
 
 ## Configure later
 
-Needs Linux, Python 3, git, an authenticated Codex or OpenCode CLI, authenticated GitHub CLI,
-access to each GitHub repository, and its remote `staging` branch. Every feature
+Needs Linux, the built `agent-linear` executable, git, an authenticated Codex or
+OpenCode CLI, authenticated GitHub CLI, access to each GitHub repository, and its
+remote `staging` branch. Every feature
 commit must use the local Git profile's author and signing key. The runner reads
 effective `user.name`, `user.email`, `user.signingkey`, and signing settings from
 the mapped local repository, honoring repository-local overrides and conditional
@@ -47,8 +48,34 @@ It does not change the source checkout's or global Git configuration or copy
 private keys. All routes require `require_signed_commits: true`; disabling it
 is rejected. Unavailable signing keys or failed verification block the run.
 
+Build from this checkout with [mise](https://mise.jdx.dev/):
+
 ```bash
 cd /home/noah/Documents/blank-agent-linear
+mise install
+mise exec -- go version
+mise run build
+./agent-linear --help
+```
+
+`mise.toml` pins Go to the `1.27` release line (tested with Go 1.27.2).
+The CLI uses [Cobra](https://cobra.dev/) and a pure-Go SQLite driver; module versions
+and checksums are pinned in `go.mod` and `go.sum`. Building needs access to those
+modules initially. The resulting executable needs no language runtime installed.
+`mise run test` runs the race-enabled tests and `mise run check` runs `go vet`.
+Race tests require a C compiler; normal builds use `CGO_ENABLED=0`.
+
+Build `agent-linear` in the repository root as shown. Configuration defaults to
+`config.json` **beside the executable**, and claims/artifacts stay in `.runs`
+beside it, regardless of the current working directory. `--config` can appear
+before or after a command and changes only the configuration path. Moving the
+executable moves its default state location: keep the existing `.runs` with it
+to preserve duplicate suppression. The directives, example config, and result
+schema are embedded at build time; rebuild after changing those sources.
+
+For a new installation:
+
+```bash
 cp config.example.json config.json
 chmod 600 config.json
 ```
@@ -80,6 +107,28 @@ DevOps documents release requirements for the owner. The agent does not merge
 or deploy. Deploy-dependent acceptance criteria remain blocked for owner
 release/verification. Existing repository CI may run automatically on a PR;
 that does not authorize the agent to trigger a separate deployment.
+
+## Update an existing installation
+
+The JSON configuration fields and `.runs/state.sqlite3` schema are unchanged.
+Existing claims, scratch directories, sessions, and lessons remain usable; there
+is no database migration or automatic retry. Keep `config.json` and `.runs` in
+the same checkout, build the executable there, and replace the old marked cron
+entry only when ready to activate the Go runner.
+
+After building, stop future polling before switching the scheduled executable:
+
+```bash
+./agent-linear uninstall-cron
+./agent-linear smoke-test
+./agent-linear cron-line
+# Activate only when ready for the next tick to start work:
+./agent-linear install-cron
+```
+
+Already running agents continue; let them finish before switching the scheduled
+executable. The installer replaces the existing `# blank-agent-linear` entry and
+preserves other jobs. Keep only one installation polling the same queue.
 
 ## Choose the CLI
 
@@ -134,9 +183,9 @@ The first live test is a setup smoke test, not feature implementation. With
 anything, then check access:
 
 ```bash
-python3 -m unittest -v test_runner.py
-python3 runner.py setup
-python3 runner.py smoke-test
+go test -race ./...
+./agent-linear setup
+./agent-linear smoke-test
 ```
 
 `smoke-test` validates the configuration/local origins and PR-only policy,
@@ -152,9 +201,9 @@ or the cron job's environment.
 Feature processing is enabled later, only when explicitly requested:
 
 ```bash
-python3 runner.py poll --dry-run
-python3 runner.py poll
-python3 runner.py status
+./agent-linear poll --dry-run
+./agent-linear poll
+./agent-linear status
 ```
 
 `--dry-run` queries Linear and reports eligible/previously claimed issues. It
@@ -166,8 +215,8 @@ For a saved issue snapshot, the same launcher can run with Linear access for
 claim/finish comments and status updates:
 
 ```bash
-python3 runner.py run --project REAL_PROJECT_UUID --issue-file /absolute/path/issue.json --dry-run
-python3 runner.py run --project REAL_PROJECT_UUID --issue-file /absolute/path/issue.json
+./agent-linear run --project REAL_PROJECT_UUID --issue-file /absolute/path/issue.json --dry-run
+./agent-linear run --project REAL_PROJECT_UUID --issue-file /absolute/path/issue.json
 ```
 
 The snapshot uses Linear's `id`, `identifier`, `title`, `description`, `url`,
@@ -244,11 +293,11 @@ The cron job must receive `LINEAR_API_KEY` through its own environment; an expor
 in an interactive shell does not configure cron. The installer does not copy
 the key into the generated cron entry.
 
-Use `python3 runner.py setup` to collect mappings for the smoke test without
+Use `./agent-linear setup` to collect mappings for the smoke test without
 scheduling. Later, to supply or update mappings while explicitly enabling cron:
 
 ```bash
-python3 runner.py install-cron --setup
+./agent-linear install-cron --setup
 ```
 
 The prompts collect each Linear project UUID, team UUID, ready-status UUID,
@@ -268,23 +317,24 @@ remain available for the next attempt.
 For mappings already configured in `config.json`:
 
 ```bash
-python3 runner.py smoke-test
-python3 runner.py cron-line
-python3 runner.py install-cron
+./agent-linear smoke-test
+./agent-linear cron-line
+./agent-linear install-cron
 crontab -l
 ```
 
 The installer verifies config and read-only Linear access, reads the existing
 crontab, backs it up at `.runs/crontab.before`, and replaces only its marked
 `# blank-agent-linear` entry. It preserves other entries and uses absolute
-Python/script/config paths plus the current PATH. Logs go to `.runs/cron.log`.
-Cron directly invokes the Python runner; no Bash wrapper is required. Install
-under the same OS user whose agent/provider and GitHub authentication and git signing setup
+executable/config paths plus the current PATH. Logs go to `.runs/cron.log`.
+Cron directly invokes the compiled Go executable; no mise activation or Bash
+wrapper is required at runtime. Install under the same OS user whose
+agent/provider and GitHub authentication and git signing setup
 will be used by scheduled sessions.
 To stop future polling, run under the same OS user:
 
 ```bash
-python3 runner.py uninstall-cron
+./agent-linear uninstall-cron
 ```
 
 It removes only this workflow's marked entry, preserves other jobs, saves the
@@ -311,11 +361,13 @@ checkout/context if appropriate; never `resume --last` into a different issue.
 Reconcile the result/PR before any operator-approved reset. This version leaves
 recovery manual; deleting state to force retries can duplicate external work.
 
-The tests exercise a real throwaway git repository with executable Codex/OpenCode fixtures and simulated GitHub
-responses, plus pagination, API errors, completion gates, signing rejection,
+The Go tests exercise real throwaway git repositories with executable Codex/OpenCode
+fixtures, a local HTTP Linear server, and simulated GitHub/crontab commands. They
+also verify existing SQLite claims survive reopening, inherited worker
+locks after the launcher is killed, pagination, API errors, completion gates, signing rejection,
 duplicate suppression, failed-run retention, crontab preservation, and the smoke
 test's lack of issue-work/scheduling effects. They also cover claim/finish comments,
-recorded session IDs, status transitions and failures, and notification failures
+recorded session IDs, current-user assignment, status transitions and failures, and notification failures
 without changing run outcomes. They do not prove live Linear auth, status updates, or comment delivery,
 model behavior, real GitHub delivery, or cron execution. The first live check
 is only the smoke test; model/signing/issue-to-PR and scheduled execution evidence

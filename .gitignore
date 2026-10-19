@@ -1,5 +1,4 @@
 config.json
 .env
 .runs/
-__pycache__/
-*.pyc
+agent-linear
