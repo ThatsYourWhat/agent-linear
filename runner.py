@@ -86,16 +86,19 @@ def workflow_states(team_id):
     return states
 
 
-def update_issue_state(issue_id, state_id, folder, stage):
+def update_issue_state(issue_id, state_id, folder, stage, assignee_id=None):
     variables = {"id": issue_id, "input": {"stateId": state_id}}
+    if assignee_id is not None:
+        variables["input"]["assigneeId"] = assignee_id
     (folder / f"{stage}-state-request.json").write_text(json.dumps(variables) + "\n")
     payload = graphql("""mutation RunState($id: String!, $input: IssueUpdateInput!) {
-      issueUpdate(id: $id, input: $input) { success issue { id state { id } } }
+      issueUpdate(id: $id, input: $input) { success issue { id state { id } assignee { id } } }
     }""", variables)["issueUpdate"]
     issue = payload.get("issue") or {}
     if (payload["success"] is not True or issue.get("id") != issue_id
-            or (issue.get("state") or {}).get("id") != state_id):
-        raise ValueError(f"Linear {stage} status update was not confirmed")
+            or (issue.get("state") or {}).get("id") != state_id
+            or assignee_id is not None and (issue.get("assignee") or {}).get("id") != assignee_id):
+        raise ValueError(f"Linear {stage} status update was not confirmed (including requested assignee)")
     (folder / f"{stage}-state.json").write_text(json.dumps(payload) + "\n")
 
 
@@ -429,11 +432,13 @@ def run_issue(config, project_id, issue, runs, db, lock_fd=None):
     hostname = socket.gethostname()
     status, pr_url = "failed", ""
     try:
+        viewer = graphql("query RunUser { viewer { id } }", {})["viewer"]
+        assignee_id = str(uuid.UUID(viewer["id"]))
         states = workflow_states(route["team_id"])
         if not post_comment(issue["id"], f"Run claimed on {hostname}. Starting work on {issue['identifier']}.",
                             folder, "start"):
             raise ValueError("Start comment failed; no feature work launched")
-        update_issue_state(issue["id"], states["In Progress"], folder, "start")
+        update_issue_state(issue["id"], states["In Progress"], folder, "start", assignee_id)
         repo = folder / "repo"
         source = Path(route["repo_path"])
         profile = git_profile(source)

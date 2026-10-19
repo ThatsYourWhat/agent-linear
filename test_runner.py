@@ -22,15 +22,19 @@ ROUTE = {
 }
 STATES = {"In Progress": "66666666-6666-4666-8666-666666666666",
           "In Review": "77777777-7777-4777-8777-777777777777"}
+USER = "88888888-8888-4888-8888-888888888888"
 
 
 def linear_response(query, variables):
+    if "viewer" in query:
+        return {"viewer": {"id": USER}}
     if "workflowStates(" in query:
         return {"workflowStates": {"nodes": [{"id": value, "name": name} for name, value in STATES.items()],
                                    "pageInfo": {"hasNextPage": False}}}
     if "issueUpdate(" in query:
         return {"issueUpdate": {"success": True, "issue": {"id": variables["id"],
-                                "state": {"id": variables["input"]["stateId"]}}}}
+                                "state": {"id": variables["input"]["stateId"]},
+                                "assignee": {"id": variables["input"].get("assigneeId", USER)}}}}
     return {"commentCreate": {"success": True, "comment": {"id": ISSUE}}}
 
 
@@ -375,7 +379,8 @@ class RunnerTest(unittest.TestCase):
     def test_run_comments_report_outcome_session_and_delivery_failures(self):
         session = "77777777-7777-4777-8777-777777777777"
         for outcome in ("ready", "blocked", "failed", "process-error", "start-error", "finish-error",
-                        "start-state-error", "review-state-error", "verification-error", "missing-state"):
+                        "start-state-error", "review-state-error", "verification-error", "missing-state",
+                        "viewer-error", "assignment-error"):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temp:
                 runs = Path(temp)
                 db = sqlite3.connect(":memory:")
@@ -388,6 +393,10 @@ class RunnerTest(unittest.TestCase):
                 launched, comments, transitions = [], [], []
 
                 def api(query, variables):
+                    if "viewer" in query:
+                        if outcome == "viewer-error":
+                            return {"viewer": {"id": ""}}
+                        return linear_response(query, variables)
                     if "workflowStates(" in query:
                         self.assertEqual(variables["team"], ROUTE["team_id"])
                         response = linear_response(query, variables)
@@ -400,17 +409,22 @@ class RunnerTest(unittest.TestCase):
                         transitions.append(state)
                         if state == STATES["In Progress"]:
                             self.assertFalse(launched)
+                            self.assertEqual(variables["input"]["assigneeId"], USER)
                         else:
                             self.assertTrue(launched)
+                            self.assertNotIn("assigneeId", variables["input"])
                             verification.assert_called_once()
                         if outcome == "start-state-error" or outcome == "review-state-error" and state == STATES["In Review"]:
                             raise runner.urllib.error.URLError("test-secret")
-                        return linear_response(query, variables)
+                        response = linear_response(query, variables)
+                        if outcome == "assignment-error":
+                            response["issueUpdate"]["issue"]["assignee"] = None
+                        return response
                     self.assertIn("commentCreate(input: $input)", query)
                     self.assertEqual(variables["input"]["issueId"], ISSUE)
                     self.assertNotIn("test-secret", variables["input"]["body"])
                     comments.append(variables["input"]["body"])
-                    if len(comments) == 1 and outcome != "missing-state":
+                    if len(comments) == 1 and outcome not in ("missing-state", "viewer-error"):
                         self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], "running")
                         self.assertFalse(launched)
                     if outcome == "start-error" and len(comments) == 1:
@@ -438,7 +452,7 @@ class RunnerTest(unittest.TestCase):
                         patch.object(runner, "verify_pr", side_effect=ValueError("Invalid PR") if outcome == "verification-error" else None) as verification, \
                         patch.object(runner.subprocess, "run", side_effect=process), \
                         patch.dict(os.environ, {"LINEAR_API_KEY": "test-secret"}):
-                    if outcome in ("start-error", "process-error", "start-state-error", "review-state-error", "verification-error", "missing-state"):
+                    if outcome in ("start-error", "process-error", "start-state-error", "review-state-error", "verification-error", "missing-state", "viewer-error", "assignment-error"):
                         with self.assertRaises((ValueError, subprocess.CalledProcessError, runner.urllib.error.URLError)):
                             runner.run_issue(config, PROJECT, issue, runs, db)
                     else:
@@ -446,11 +460,11 @@ class RunnerTest(unittest.TestCase):
                     runner.run_issue(config, PROJECT, issue, runs, db)
                 expected = "blocked" if outcome == "finish-error" else "failed" if outcome.endswith("error") or outcome == "missing-state" else outcome
                 self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], expected)
-                expected_transitions = [] if outcome in ("start-error", "missing-state") else [STATES["In Progress"]]
+                expected_transitions = [] if outcome in ("start-error", "missing-state", "viewer-error") else [STATES["In Progress"]]
                 if outcome in ("ready", "review-state-error"):
                     expected_transitions.append(STATES["In Review"])
                 self.assertEqual(transitions, expected_transitions)
-                if outcome == "missing-state":
+                if outcome in ("missing-state", "viewer-error"):
                     self.assertFalse(launched)
                     self.assertEqual(len(comments), 1)
                     self.assertIn("with status failed.", comments[0])
@@ -459,12 +473,12 @@ class RunnerTest(unittest.TestCase):
                 self.assertEqual(len(comments), 2)
                 self.assertEqual(comments[0], "Run claimed on worker-host. Starting work on APP-1.")
                 self.assertIn(f"Run finished on worker-host with status {expected}.", comments[1])
-                if outcome in ("start-error", "start-state-error"):
+                if outcome in ("start-error", "start-state-error", "assignment-error"):
                     self.assertFalse(launched)
                     self.assertNotIn("codex resume", comments[1])
                 else:
                     self.assertIn(f"Resume the codex session: `test-codex resume {session}`", comments[1])
-                if outcome not in ("start-error", "start-state-error", "process-error"):
+                if outcome not in ("start-error", "start-state-error", "assignment-error", "process-error"):
                     self.assertEqual(comments[1], f"Run finished on worker-host with status {expected}. "
                                      f"View pull request at {result()['pr_url']}. Resume the codex session: `test-codex resume {session}`")
                 folder = runs / ISSUE
@@ -497,21 +511,23 @@ class RunnerTest(unittest.TestCase):
                 self.assertIn("team: {id: {eq: $team}}", api.call_args.args[0])
 
     def test_state_update_requires_confirmation_and_retains_evidence_without_retry(self):
-        variables = {"id": ISSUE, "input": {"stateId": STATES["In Progress"]}}
+        variables = {"id": ISSUE, "input": {"stateId": STATES["In Progress"], "assigneeId": USER}}
         valid = linear_response("issueUpdate(", variables)["issueUpdate"]
         invalid = [dict(valid, success=False), dict(valid, issue=None),
                    dict(valid, issue={"id": PROJECT, "state": valid["issue"]["state"]}),
-                   dict(valid, issue={"id": ISSUE, "state": {"id": STATES["In Review"]}})]
+                   dict(valid, issue={"id": ISSUE, "state": {"id": STATES["In Review"]}}),
+                   dict(valid, issue=dict(valid["issue"], assignee=None)),
+                   dict(valid, issue=dict(valid["issue"], assignee={"id": PROJECT}))]
         for response in [valid, *invalid]:
             with self.subTest(response=response), tempfile.TemporaryDirectory() as temp, \
                     patch.object(runner, "graphql", return_value={"issueUpdate": response}) as api:
                 folder = Path(temp)
                 if response == valid:
-                    runner.update_issue_state(ISSUE, STATES["In Progress"], folder, "start")
+                    runner.update_issue_state(ISSUE, STATES["In Progress"], folder, "start", USER)
                     self.assertEqual(json.loads((folder / "start-state.json").read_text()), valid)
                 else:
                     with self.assertRaisesRegex(ValueError, "status update was not confirmed"):
-                        runner.update_issue_state(ISSUE, STATES["In Progress"], folder, "start")
+                        runner.update_issue_state(ISSUE, STATES["In Progress"], folder, "start", USER)
                     self.assertFalse((folder / "start-state.json").exists())
                 api.assert_called_once()
                 self.assertEqual(api.call_args.args[1], variables)
@@ -650,6 +666,10 @@ class RunnerTest(unittest.TestCase):
                 self.assertEqual(db.execute("SELECT status FROM runs").fetchone()[0], expected)
                 transitions = [call.args[1]["input"]["stateId"] for call in api.call_args_list if "issueUpdate(" in call.args[0]]
                 self.assertEqual(transitions, list(STATES.values()) if outcome == "ready" else [STATES["In Progress"]])
+                updates = [call.args[1]["input"] for call in api.call_args_list if "issueUpdate(" in call.args[0]]
+                self.assertEqual(updates[0]["assigneeId"], USER)
+                if outcome == "ready":
+                    self.assertNotIn("assigneeId", updates[1])
                 comment = (runs / ISSUE / "finish-comment.txt").read_text()
                 self.assertIn(f"status {expected}.", comment)
                 self.assertIn("--session ses_test123" if engine == "opencode" else f"resume {PROJECT}", comment)

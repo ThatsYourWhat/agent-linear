@@ -65,7 +65,11 @@ The runner does not load credential files. Credentials are not stored in config,
 issue snapshots, prompts, or the state database, and the Linear key is removed
 from the agent's environment. The runner posts claim and finish comments through
 Linear's API and changes issue status; the key must allow comment creation,
-workflow-state reads, and issue updates. Assignment stays unchanged. Each routed
+workflow-state/user reads, and issue updates. At start, the runner assigns the issue
+to the authenticated user returned by Linear's `viewer` query using that runner's
+`LINEAR_API_KEY`, replacing any existing assignee. Each teammate should use their
+own personal key; the MCP connection and runner key can represent different users.
+No user ID is hardcoded or added to config. Each routed
 team must have exactly one status named `In Progress` and one named `In Review`.
 The runner resolves these by name within that team; no new config is needed.
 Smoke tests and dry runs remain read-only against Linear.
@@ -171,12 +175,17 @@ and nested `project.id`, `team.id`, `state.id`. Supply the full body and linked
 dependency context. Saved snapshots are deliberate manual inputs, not refreshed
 from Linear. A live target session still needs access to the selected CLI, its provider, and GitHub.
 
-After the local claim is committed, the runner resolves both team statuses, then posts
+After the local claim is committed, the runner resolves the authenticated user and
+both team statuses, then posts
 `Run claimed on HOSTNAME. Starting work on IDENTIFIER.` before cloning or launching
 the agent. If that comment cannot be confirmed, the run fails without starting feature
 work. It then changes the issue to **In Progress**, confirming the returned issue
 and status IDs before cloning or launching the agent. Missing/ambiguous statuses or
 an unconfirmed start update fail the run before feature work starts.
+The same In Progress mutation assigns the authenticated user, and the response must
+confirm both the status and assignee before work launches. A failed user lookup or
+unconfirmed assignment fails the run without launching feature work. The In Review
+update does not change the assignee.
 The comment announces ownership; SQLite remains the local duplicate guard,
 and the comment is not a lock across machines.
 
@@ -206,8 +215,8 @@ failure preserves the run outcome and logs delivery evidence in the issue's
 scratch directory. Comment bodies, confirmed IDs, and delivery errors are retained
 as `start-comment.*` and `finish-comment.*`. There are no automatic mutation retries:
 after a timeout, check Linear before manually reposting. A killed runner may leave
-only a start comment. A successful run adds five Linear API requests: one status
-lookup, two status updates, and two comments.
+only a start comment. A successful run adds six Linear API requests: one user
+lookup, one status lookup, two status updates, and two comments.
 
 Every issue is claimed in `.runs/state.sqlite3` before external work starts.
 The existing repository is cloned with separate git metadata; only committed
