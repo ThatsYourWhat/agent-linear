@@ -273,7 +273,7 @@ func TestFailureEvidenceRedactsLinearKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err = r.runIssue(testConfig(source), projectID, testIssue(), runs, db, nil); err == nil {
+	if err = r.runIssue(testConfig(source), projectID, testIssue(), runs, db, nil, false); err == nil {
 		t.Fatal("startup failure ignored")
 	}
 	evidence, err := os.ReadFile(filepath.Join(runs, issueID, "failure.txt"))

@@ -29,12 +29,14 @@ type runner struct {
 	client           *http.Client
 	endpoint         string
 	command          func(string, ...string) (string, error)
+	preflightTimeout time.Duration
 }
 
 func newRunner(executable string) *runner {
 	r := &runner{root: filepath.Dir(executable), executable: executable, in: os.Stdin,
 		out: os.Stdout, errOut: os.Stderr, client: &http.Client{Timeout: 30 * time.Second}, endpoint: "https://api.linear.app/graphql"}
 	r.command = command
+	r.preflightTimeout = 90 * time.Second
 	return r
 }
 
@@ -236,6 +238,16 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	if action == "cron-line" || action == "install-cron" {
 		return r.installCron(c, configPath, runs, action == "cron-line")
 	}
+	if !dryRun {
+		limit, err := activeCooldown(db, c)
+		if err != nil {
+			return err
+		}
+		if limit != nil {
+			fmt.Fprintln(r.out, limit.Error())
+			return nil
+		}
+	}
 	var queue []queuedIssue
 	if action == "run" {
 		if issueFile == "" || c.Projects[project] == nil {
@@ -274,7 +286,7 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 			fmt.Fprintf(r.out, "%s: %s\n", textAt(issue, "identifier"), seen)
 			continue
 		}
-		if seen != "" {
+		if isClaimed(seen) {
 			continue
 		}
 		if action == "poll" {
@@ -287,7 +299,12 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 			}
 			issue = fresh[0]
 		}
-		if err = r.runIssue(c, item.project, issue, runs, db, lock); err != nil {
+		if err = r.runIssue(c, item.project, issue, runs, db, lock, action == "poll"); err != nil {
+			var limit *providerLimit
+			if errors.As(err, &limit) && !limit.recordingFailed {
+				fmt.Fprintln(r.out, limit.Error())
+				return nil
+			}
 			return err
 		}
 	}

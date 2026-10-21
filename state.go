@@ -19,6 +19,10 @@ func openState(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
+	if _, err = db.Exec(`CREATE TABLE IF NOT EXISTS provider_cooldowns (provider TEXT PRIMARY KEY, retry_at INTEGER NOT NULL)`); err != nil {
+		db.Close()
+		return nil, err
+	}
 	return db, nil
 }
 func claimedStatus(db *sql.DB, id string) (string, error) {

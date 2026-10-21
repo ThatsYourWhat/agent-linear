@@ -127,6 +127,9 @@ func agentFixture(root, engine string) int {
 	if err != nil {
 		return fail(err)
 	}
+	if string(prompt) == availabilityPrompt {
+		return availabilityFixture(root, engine)
+	}
 	if !strings.Contains(string(prompt), "Reject empty input") || os.Getenv("LINEAR_API_KEY") != "" || os.Getenv("GIT_AUTHOR_NAME") != "Test" || os.Getenv("GIT_AUTHOR_EMAIL") != "test@example.com" {
 		return fail("invalid prompt/environment")
 	}
@@ -200,6 +203,15 @@ func agentFixture(root, engine string) int {
 	}
 	if _, err = command(repo, args...); err != nil {
 		return fail(err)
+	}
+	if outcome == "limit-during" {
+		if engine == "codex" {
+			fmt.Println(`{"type":"turn.failed","error":{"message":"You've hit your usage limit"}}`)
+		} else {
+			fmt.Println(`{"type":"error","error":{"name":"APIError","data":{"statusCode":429,"message":"rate limit exceeded"}}}`)
+		}
+		time.Sleep(10 * time.Second)
+		return 1
 	}
 	report := goodReport()
 	sha, err := command(repo, "git", "rev-parse", "HEAD")
@@ -349,6 +361,7 @@ type linearFixture struct {
 	calls      []apiCall
 	outcome    string
 	issue      map[string]any
+	moreIssues []map[string]any
 	queueReads int
 }
 
@@ -401,7 +414,22 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 	case strings.Contains(call.Query, "issues("):
 		f.queueReads++
 		nodes := []any{f.issue}
+		for _, issue := range f.moreIssues {
+			nodes = append(nodes, issue)
+		}
+		if id := textAt(call.Variables, "filter", "id", "eq"); id != "" {
+			filtered := []any{}
+			for _, issue := range nodes {
+				if textAt(issue, "id") == id {
+					filtered = append(filtered, issue)
+				}
+			}
+			nodes = filtered
+		}
 		if f.issue == nil || f.outcome == "withdrawn" && f.queueReads > 1 {
+			nodes = []any{}
+		}
+		if f.outcome == "withdrawn-after-preflight" && f.queueReads > 2 {
 			nodes = []any{}
 		}
 		data = map[string]any{"issues": map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}}}
@@ -474,7 +502,7 @@ func TestIssueWorkflow(t *testing.T) {
 					}
 					err = executeTest(r, "run", "--project", projectID, "--issue-file", filepath.Join(root, "issue.json"))
 				} else {
-					err = r.runIssue(c, projectID, testIssue(), runs, db, nil)
+					err = r.runIssue(c, projectID, testIssue(), runs, db, nil, false)
 				}
 				expected := "failed"
 				if outcome == "ready" || outcome == "finish-error" {
@@ -493,7 +521,7 @@ func TestIssueWorkflow(t *testing.T) {
 				api.mu.Lock()
 				calls := append([]apiCall{}, api.calls...)
 				api.mu.Unlock()
-				if err = r.runIssue(c, projectID, testIssue(), runs, db, nil); err != nil {
+				if err = r.runIssue(c, projectID, testIssue(), runs, db, nil, false); err != nil {
 					t.Fatal(err)
 				}
 				api.mu.Lock()

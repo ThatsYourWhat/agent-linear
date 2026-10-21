@@ -145,9 +145,10 @@ that does not authorize the agent to trigger a separate deployment.
 
 ## Update an existing installation
 
-The JSON configuration fields and `.runs/state.sqlite3` schema are unchanged.
+The JSON configuration fields and existing SQLite `runs` table are unchanged.
+Provider cooldown metadata is added automatically in the same database.
 Existing claims, scratch directories, sessions, and lessons remain usable; there
-is no database migration or automatic retry. Keep `config.json` and `.runs` in
+is no manual database migration or automatic retry of started work. Keep `config.json` and `.runs` in
 the same checkout, build the executable there, and replace the old marked cron
 entry only when ready to activate the Go runner.
 
@@ -198,7 +199,55 @@ OpenCode support uses `opencode run --format json` with the prompt on stdin,
 verified against version 1.18.14. The runner extracts the final completed text
 from its events into `result.json`; both engines' reports must match
 `result.schema.json` before PR verification. Missing, malformed, interrupted,
-or error results fail the run. No engine fallback or automatic retry occurs.
+or error results fail the run. There is no engine fallback or automatic retry of
+started work. Untouched issues deferred by a provider limit can be tried later.
+
+## Provider capacity and limits
+
+Before claiming an eligible issue or making any Linear mutation, the runner sends
+a small availability prompt through the selected CLI and model, using the target
+repository's native provider configuration. It requires an exact `READY` reply.
+This is a real model request and consumes provider usage. The check requests no
+tools or issue work, strips `LINEAR_API_KEY`, uses a read-only Codex sandbox with
+shell/web tools disabled, or an OpenCode agent with tool permissions denied. It
+has a 90-second deadline. Smoke tests and dry runs do not make this request.
+
+A recognized rate, usage, credit, or quota limit causes a **15-minute local
+cooldown** persisted in `.runs/state.sqlite3`, shared by all project routes using
+the same engine, executable path, and configured model (or native default). The
+current tick stops, and later ticks skip pickup during that cooldown without
+contacting Linear or the model. Cron stays installed. After expiry, the next
+eligible issue receives a new availability check; another limit renews cooldown.
+This is a polling delay, not a promise that provider capacity resets in 15 minutes.
+
+If the availability check reports a limit, the issue is recorded locally as
+`deferred`: its assignee, status, and comments remain untouched, and no feature
+checkout is created. A deferred row does not claim the issue; after cooldown it
+can become eligible work again, subject to a fresh ready-state/label check for
+polling. Polling refreshes eligibility again after availability is confirmed and
+before claiming, so withdrawal during the check does not start stale work.
+Authentication errors, timeouts, or unexpected availability responses
+also stop pickup before any claim or Linear mutation, but remain errors rather
+than being classified as provider limits.
+
+If a limit is reported **after launch**, the CLI process group is stopped, the
+local issue becomes `blocked`, and a finish comment explains the interruption
+and provides the recorded session's resume command when available. The issue
+stays In Progress, the existing assignee and partial checkout/commits are retained,
+and no In Review transition occurs. The provider cooldown also stops other work.
+The blocked issue is never automatically restarted, even after capacity returns:
+inspect the checkout, remote branch and PR, then resume/reconcile manually.
+
+Detection watches provider error/retry JSON events and diagnostic stderr for
+recognized limit codes/messages (including HTTP 429). It ignores ordinary
+assistant text and tool-result events. Reported limits interrupt CLI retries;
+unrecognized errors keep the normal failure behavior. A successful check cannot
+guarantee capacity for an entire issue. There is still no overall feature-run
+timeout for silent stalls that do not emit a recognized limit.
+
+Availability logs are retained under `.runs/preflight/check-*/`; deferred evidence
+includes `deferred.json`. Started interruptions retain `provider-limit.json`,
+`failure.txt`, events, stderr, and the checkout in the issue's scratch directory.
 
 The runner gives OpenCode a per-run `linear-issue` agent: shell work is allowed,
 subagents and questions are denied, and edits are restricted to the checkout
@@ -259,7 +308,7 @@ and nested `project.id`, `team.id`, `state.id`. Supply the full body and linked
 dependency context. Saved snapshots are deliberate manual inputs, not refreshed
 from Linear. A live target session still needs access to the selected CLI, its provider, and GitHub.
 
-After the local claim is committed, the runner resolves the authenticated user and
+After availability is confirmed and the local claim is committed, the runner resolves the authenticated user and
 both team statuses, then posts
 `Run claimed on HOSTNAME. Starting work on IDENTIFIER.` before cloning or launching
 the agent. If that comment cannot be confirmed, the run fails without starting feature
@@ -288,7 +337,8 @@ After saving the final outcome, the runner posts:
 Run finished on <hostname> with status <run status>. View pull request at <GitHub PR URL>. Resume the codex session: `codex resume <codex session id>`
 ```
 
-Statuses are `ready`, `blocked`, or `failed`. Session IDs come from CLI events:
+Finish-comment statuses are `ready`, `blocked`, or `failed`; untouched `deferred`
+issues receive no Linear comment. Session IDs come from CLI events:
 Codex's `thread.started.thread_id` or OpenCode's `sessionID`, not the agent report.
 For OpenCode, the comment supplies `opencode --session ses_...` with the saved
 `OPENCODE_CONFIG_CONTENT` permissions. The executable path follows the run's config. Resume on the named machine
@@ -299,10 +349,13 @@ failure preserves the run outcome and logs delivery evidence in the issue's
 scratch directory. Comment bodies, confirmed IDs, and delivery errors are retained
 as `start-comment.*` and `finish-comment.*`. There are no automatic mutation retries:
 after a timeout, check Linear before manually reposting. A killed runner may leave
-only a start comment. A successful run adds six Linear API requests: one user
-lookup, one status lookup, two status updates, and two comments.
+only a start comment. A successful run's identity/status lookup and mutations use
+six Linear API requests: one user lookup, one status lookup, two status updates,
+and two comments. Polling also queries the queue and refreshes eligibility before
+and after the model availability check.
 
-Every issue is claimed in `.runs/state.sqlite3` before external work starts.
+Every launched issue is claimed in `.runs/state.sqlite3` after its model
+availability check and before issue mutations, cloning, or feature work starts.
 The existing repository is cloned with separate git metadata; only committed
 source is copied, then the actual remote `staging` SHA is fetched as the base.
 The user's uncommitted checkout stays intact. Branches use
@@ -395,6 +448,8 @@ branch/PR first. Continue that issue's recorded session with the original
 checkout/context if appropriate; never `resume --last` into a different issue.
 Reconcile the result/PR before any operator-approved reset. This version leaves
 recovery manual; deleting state to force retries can duplicate external work.
+Untouched `deferred` issues are the exception: their availability check may run
+again after cooldown, because no feature session or Linear mutation started.
 
 The Go tests exercise real throwaway git repositories with executable Codex/OpenCode
 fixtures, a local HTTP Linear server, and simulated GitHub/crontab commands. They

@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-func (r *runner) runIssue(c *config, project string, issue map[string]any, runs string, db *sql.DB, lock *os.File) (runErr error) {
+func (r *runner) runIssue(c *config, project string, issue map[string]any, runs string, db *sql.DB, lock *os.File, refresh bool) (runErr error) {
 	engine, binary := c.agent()
 	rt := c.Projects[project]
 	if err := validateIssue(issue, project, rt); err != nil {
@@ -21,15 +21,53 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	if err != nil {
 		return err
 	}
-	if seen != "" {
+	if isClaimed(seen) {
 		return nil
+	}
+	preflight, err := r.checkProvider(c, rt.RepoPath, runs, db, lock)
+	if err != nil {
+		var limit *providerLimit
+		if errors.As(err, &limit) {
+			if e := saveCooldown(db, c, limit); e != nil {
+				limit.recordingFailed = true
+				return errors.Join(err, e)
+			}
+			if preflight != "" {
+				if _, e := db.Exec(`INSERT INTO runs VALUES (?,?,?,?,?) ON CONFLICT(issue_id) DO UPDATE SET status=excluded.status,folder=excluded.folder WHERE runs.status='deferred'`, id, identifier, "deferred", preflight, ""); e != nil {
+					limit.recordingFailed = true
+					return errors.Join(err, e)
+				}
+				if e := writeJSON(filepath.Join(preflight, "deferred.json"), map[string]any{"issue_id": id, "engine": engine, "status": "deferred", "retry_at": limit.RetryAt}); e != nil {
+					limit.recordingFailed = true
+					return errors.Join(err, e)
+				}
+			}
+			fmt.Fprintf(r.out, "%s: deferred; Linear unchanged. %s\n", identifier, limit.Error())
+		}
+		return err
+	}
+	if refresh {
+		fresh, err := r.issues(project, rt, id)
+		if err != nil {
+			return err
+		}
+		if len(fresh) == 0 {
+			return nil
+		}
+		issue = fresh[0]
+		if textAt(issue, "id") != id {
+			return errors.New("refreshed issue does not match selected issue")
+		}
+		if err = validateIssue(issue, project, rt); err != nil {
+			return err
+		}
 	}
 	folder := filepath.Join(runs, id)
 	if err = os.Mkdir(folder, 0700); err != nil {
 		return err
 	}
 	branch := "linear-" + strings.ToLower(identifier) + "-" + id[:8]
-	if _, err = db.Exec("INSERT INTO runs VALUES (?, ?, ?, ?, ?)", id, identifier, "running", folder, ""); err != nil {
+	if _, err = db.Exec(`INSERT INTO runs VALUES (?, ?, ?, ?, ?) ON CONFLICT(issue_id) DO UPDATE SET status=excluded.status,folder=excluded.folder,pr_url=excluded.pr_url WHERE runs.status='deferred'`, id, identifier, "running", folder, ""); err != nil {
 		return err
 	}
 	hostname, err := os.Hostname()
@@ -39,10 +77,28 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	status, prURL := "failed", ""
 	defer func() {
 		if runErr != nil {
-			if _, e := db.Exec("UPDATE runs SET status='failed' WHERE issue_id=?", id); e != nil {
+			var limit *providerLimit
+			if errors.As(runErr, &limit) {
+				status = "blocked"
+				if e := saveCooldown(db, c, limit); e != nil {
+					limit.recordingFailed = true
+					runErr = errors.Join(runErr, e)
+				}
+				if e := writeJSON(filepath.Join(folder, "provider-limit.json"), map[string]any{"status": "blocked", "engine": engine, "retry_at": limit.RetryAt, "recovery": "Resume the recorded session; inspect checkout/PR before reconciliation. No automatic retry."}); e != nil {
+					limit.recordingFailed = true
+					runErr = errors.Join(runErr, e)
+				}
+			}
+			if _, e := db.Exec("UPDATE runs SET status=? WHERE issue_id=?", status, id); e != nil {
+				if limit != nil {
+					limit.recordingFailed = true
+				}
 				runErr = errors.Join(runErr, e)
 			}
 			if e := writeFile(filepath.Join(folder, "failure.txt"), []byte(redact(runErr.Error())+"\nInspect logs and remote PR before recovery\n")); e != nil {
+				if limit != nil {
+					limit.recordingFailed = true
+				}
 				runErr = errors.Join(runErr, e)
 			}
 		}
@@ -59,6 +115,10 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 			url = "unavailable (no PR URL recorded)"
 		}
 		body := fmt.Sprintf("Run finished on %s with status %s. View pull request at %s. %s", hostname, status, url, resume)
+		var limit *providerLimit
+		if errors.As(runErr, &limit) {
+			body += " Provider limit reached after launch; partial work preserved. No automatic retry. " + limit.Error()
+		}
 		// Delivery failure is recorded by postComment; preserve the saved outcome.
 		if e := r.postComment(id, body, folder, "finish"); e != nil {
 			fmt.Fprintln(r.errOut, "Run outcome preserved; inspect finish-comment delivery evidence")

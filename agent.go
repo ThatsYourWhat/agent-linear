@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -259,7 +260,7 @@ func (r *runner) launchAgent(c *config, repo, folder, prompt string, env, lesson
 	if lock != nil {
 		cmd.ExtraFiles = []*os.File{lock}
 	}
-	if err = cmd.Run(); err != nil {
+	if err = runModel(context.Background(), cmd, out, stderr); err != nil {
 		return nil, fmt.Errorf("agent %s failed: %w; inspect stderr.log", engine, err)
 	}
 	if engine == "opencode" {
