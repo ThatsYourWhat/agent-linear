@@ -30,7 +30,7 @@ const prURL = "https://github.com/acme/widget/pull/12"
 
 func goodReport() map[string]any {
 	var result map[string]any
-	if err := json.Unmarshal([]byte(`{"status":"ready","summary":"Handle empty input","pr_url":"https://github.com/acme/widget/pull/12","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","criteria":[{"requirement":"Reject empty input","status":"passed","evidence":"test passed"}],"checks":[{"command":"go test ./...","passed":true,"evidence":"exit 0"}],"security":"APPROVED","qa":"passed","blockers":[],"deployment":{"status":"not-requested","environment":"none","sha":"","url":"","evidence":"PR only"}}`), &result); err != nil {
+	if err := json.Unmarshal([]byte(`{"status":"ready","completion":"pr","summary":"Handle empty input","pr_url":"https://github.com/acme/widget/pull/12","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","criteria":[{"requirement":"Reject empty input","status":"passed","evidence":"test passed"}],"checks":[{"command":"go test ./...","passed":true,"evidence":"exit 0"}],"security":"APPROVED","qa":"passed","blockers":[],"deployment":{"status":"not-requested","environment":"none","sha":"","url":"","evidence":"PR only"}}`), &result); err != nil {
 		panic(err)
 	}
 	criteria := []any{}
@@ -137,7 +137,7 @@ func agentFixture(root, engine string) int {
 	if string(prompt) == availabilityPrompt {
 		return availabilityFixture(root, engine)
 	}
-	if !strings.Contains(string(prompt), "Reject empty input") || os.Getenv("LINEAR_API_KEY") != "" || os.Getenv("GIT_AUTHOR_NAME") != "Test" || os.Getenv("GIT_AUTHOR_EMAIL") != "test@example.com" {
+	if (!strings.Contains(string(prompt), "Reject empty input") && !strings.Contains(string(prompt), "Do not modify any files.")) || os.Getenv("LINEAR_API_KEY") != "" || os.Getenv("GIT_AUTHOR_NAME") != "Test" || os.Getenv("GIT_AUTHOR_EMAIL") != "test@example.com" {
 		return fail("invalid prompt/environment")
 	}
 	resumed := slices.Contains(os.Args, "resume") || slices.Contains(os.Args, "--session")
@@ -267,6 +267,9 @@ func agentFixture(root, engine string) int {
 	report["commit_sha"] = sha
 	if strings.HasPrefix(outcome, "no-code") {
 		report["pr_url"] = ""
+		if outcome != "no-code-pr-required" {
+			report["completion"] = "no-code"
+		}
 		if outcome == "no-code-blocked" {
 			report["status"] = "blocked"
 		}

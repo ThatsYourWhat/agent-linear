@@ -91,6 +91,7 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 		hostname = "unknown-host"
 	}
 	status, prURL := "failed", ""
+	noCode := false
 	defer func() {
 		if runErr != nil {
 			var limit *providerLimit
@@ -131,7 +132,7 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 			url = "unavailable (no PR URL recorded)"
 		}
 		body := fmt.Sprintf("Run finished on %s with status %s. View pull request at %s. %s", hostname, status, url, resume)
-		if status == "ready" && noCodeCompletion(issueRequirements(issue)) {
+		if status == "ready" && noCode {
 			body = fmt.Sprintf("Run finished on %s with status ready. No code changes; PR not required. Evidence: result.json in the retained run artifacts. %s", hostname, resume)
 		}
 		var limit *providerLimit
@@ -240,6 +241,7 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	if err != nil {
 		return err
 	}
+	noCode = noCodeCompletion(report)
 	if candidate := textAt(report, "pr_url"); validPRURL(candidate, rt) {
 		prURL = candidate
 		if _, err = db.Exec("UPDATE runs SET pr_url=? WHERE issue_id=?", prURL, id); err != nil {

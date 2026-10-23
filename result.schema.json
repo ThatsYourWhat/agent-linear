@@ -1,9 +1,10 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["status", "summary", "pr_url", "commit_sha", "criteria", "checks", "security", "qa", "deployment", "blockers"],
+  "required": ["status", "completion", "summary", "pr_url", "commit_sha", "criteria", "checks", "security", "qa", "deployment", "blockers"],
   "properties": {
     "status": {"type": "string", "enum": ["ready", "blocked", "failed"]},
+    "completion": {"type": "string", "enum": ["pr", "no-code"]},
     "summary": {"type": "string"},
     "pr_url": {"type": "string"},
     "commit_sha": {"type": "string"},

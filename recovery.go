@@ -161,7 +161,7 @@ func (r *runner) reconcile(c *config, id, runs string, db *sql.DB) error {
 			return errors.New("reconciliation saved; previous comment delivery is uncertain and was not repeated")
 		}
 		body := fmt.Sprintf("Recorded run reconciled with status %s. View pull request at %s. No implementation was relaunched.", textAt(report, "status"), textAt(report, "pr_url"))
-		if textAt(report, "status") == "ready" && noCodeCompletion(saved.Requirements) {
+		if textAt(report, "status") == "ready" && noCodeCompletion(report) {
 			body = "Recorded run reconciled with status ready. No code changes; PR not required. No implementation was relaunched."
 		}
 		if err = r.postComment(id, body, saved.Scratch, stage); err != nil {

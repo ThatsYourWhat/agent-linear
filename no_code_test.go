@@ -17,7 +17,7 @@ func TestNoCodeCompletionWorkflow(t *testing.T) {
 			if err := writeJSON(filepath.Join(root, "config.json"), c); err != nil {
 				t.Fatal(err)
 			}
-			api.issue["description"] = "Completion: no-code\n\nDo not change product files. Reject empty input"
+			api.issue["description"] = `Do not modify any files. Comment "This worked again again!" on this issue. Then the issue is considered complete.`
 			previous := r.command
 			r.command = func(dir string, args ...string) (string, error) {
 				if len(args) > 1 && args[0] == "gh" && (args[1] == "pr" || args[1] == "api") {
@@ -71,8 +71,8 @@ func TestNoCodeCompletionWorkflow(t *testing.T) {
 	}
 }
 
-func TestNoCodeDoesNotBypassDefaultPRPolicy(t *testing.T) {
-	root, r, _, api := gapRunner(t, "no-code")
+func TestPRCompletionStillRequiresPR(t *testing.T) {
+	root, r, _, api := gapRunner(t, "no-code-pr-required")
 	if err := executeTest(r, "poll"); err == nil {
 		t.Fatal("default code issue accepted without PR")
 	}
@@ -106,13 +106,17 @@ func TestNoCodeReportAndCheckoutGates(t *testing.T) {
 			}
 			rt := testConfig(repo).Projects[projectID]
 			issue := testIssue()
-			issue["description"] = "Completion: no-code\n\nReject empty input"
+			issue["description"] = "Do not modify product files. Reject empty input"
 			if scenario == "default" {
 				issue = testIssue()
 			}
 			requirements := issueRequirements(issue)
 			report := goodReport()
 			report["pr_url"] = ""
+			report["completion"] = "no-code"
+			if scenario == "default" {
+				report["completion"] = "pr"
+			}
 			report["commit_sha"] = base
 			criteria := []any{}
 			for _, item := range requirements {
@@ -171,40 +175,11 @@ func TestNoCodeReportAndCheckoutGates(t *testing.T) {
 	}
 }
 
-func TestNoCodeHeaderMustBeExplicitAndFirst(t *testing.T) {
-	for _, sample := range []struct {
-		body    string
-		allowed bool
-	}{
-		{"Completion: no-code\n\nObserve the result", true},
-		{"\r\n  completion: NO-CODE  \r\n\r\nObserve the result", true},
-		{"Investigate only", false},
-		{"Instructions\n\nCompletion: no-code", false},
-		{"```text\nCompletion: no-code\n```", false},
-		{"> Completion: no-code", false},
-		{"Completion: no-code or pr", false},
-	} {
-		issue := testIssue()
-		issue["description"] = sample.body
-		if actual := noCodeCompletion(issueRequirements(issue)); actual != sample.allowed {
-			t.Fatalf("%q: got %v", sample.body, actual)
-		}
-	}
-	issue := testIssue()
-	issue["title"] = "Completion: no-code"
-	if noCodeCompletion(issueRequirements(issue)) {
-		t.Fatal("title waived PR gate")
-	}
-	if noCodeCompletion(nil) {
-		t.Fatal("missing original requirements waived PR gate")
-	}
-}
-
 func TestNoCodeCompletionPreservesHumanChanges(t *testing.T) {
 	for _, scenario := range []string{"edited", "reassigned", "cancelled"} {
 		t.Run(scenario, func(t *testing.T) {
 			root, r, _, api := gapRunner(t, "no-code")
-			api.issue["description"] = "Completion: no-code\n\nReject empty input"
+			api.issue["description"] = "Do not modify product files. Reject empty input"
 			api.outcome = scenario
 			if err := executeTest(r, "poll"); err == nil {
 				t.Fatal("changed scope/owner/status was overwritten")
@@ -224,7 +199,7 @@ func TestNoCodeManagedResume(t *testing.T) {
 			if err := writeJSON(filepath.Join(root, "config.json"), c); err != nil {
 				t.Fatal(err)
 			}
-			api.issue["description"] = "Completion: no-code\n\nReject empty input"
+			api.issue["description"] = "Do not modify product files. Reject empty input"
 			if err := executeTest(r, "poll"); err != nil {
 				t.Fatal(err)
 			}
@@ -250,17 +225,92 @@ func TestNoCodeManagedResume(t *testing.T) {
 	}
 }
 
-func TestCannotOptExistingRunIntoNoCodeCompletion(t *testing.T) {
+func TestCompletionCannotReplaceFrozenRequirements(t *testing.T) {
 	root, r, _, api := gapRunner(t, "blocked")
 	if err := executeTest(r, "poll"); err != nil {
 		t.Fatal(err)
 	}
-	api.issue["description"] = "Completion: no-code\n\nReject empty input"
+	api.issue["description"] = "Do not modify product files. Reject empty input"
 	mustWrite(t, filepath.Join(root, "outcome"), "no-code")
 	if err := executeTest(r, "resume", "--issue", issueID); err == nil {
 		t.Fatal("late opt-in replaced original task policy")
 	}
 	if exists(filepath.Join(root, "resume-calls.json")) {
 		t.Fatal("new scope was allowed to resume")
+	}
+}
+
+func TestLegacyReportCompletionKeepsOutcomeAndBlockers(t *testing.T) {
+	for _, kind := range []string{"pr", "no-code", "blocked"} {
+		t.Run(kind, func(t *testing.T) {
+			folder := t.TempDir()
+			report := goodReport()
+			delete(report, "completion")
+			expected := "pr"
+			if kind != "pr" {
+				report["pr_url"] = ""
+				expected = "no-code"
+			}
+			if kind == "blocked" {
+				report["status"] = "blocked"
+				report["blockers"] = []any{"previous workflow required a header"}
+			}
+			if err := writeJSON(filepath.Join(folder, "result.json"), report); err != nil {
+				t.Fatal(err)
+			}
+			before, err := os.ReadFile(filepath.Join(folder, "result.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := readReport(folder)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if textAt(loaded, "completion") != expected || textAt(loaded, "status") != textAt(report, "status") {
+				t.Fatal("legacy outcome changed", loaded)
+			}
+			if kind == "blocked" && len(loaded["blockers"].([]any)) != 1 {
+				t.Fatal("legacy blocker silently cleared")
+			}
+			after, err := os.ReadFile(filepath.Join(folder, "result.json"))
+			if err != nil || string(before) != string(after) {
+				t.Fatal("reading legacy report overwrote evidence", err)
+			}
+		})
+	}
+}
+
+func TestResumeRefreshesRunnerPolicyWithoutReplacingOriginalTask(t *testing.T) {
+	root, r, _, api := gapRunner(t, "no-code-blocked")
+	api.issue["description"] = "Do not modify any files. Reject empty input"
+	if err := executeTest(r, "poll"); err != nil {
+		t.Fatal(err)
+	}
+	folder := filepath.Join(root, ".runs", issueID)
+	original, err := os.ReadFile(filepath.Join(folder, "context.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := "Old runner policy: blocked unless Completion: no-code is present."
+	mustWrite(t, filepath.Join(folder, "AGENT.md"), previous)
+	mustWrite(t, filepath.Join(root, "outcome"), "no-code")
+	if err = executeTest(r, "resume", "--issue", issueID); err != nil {
+		t.Fatal(err)
+	}
+	current, err := os.ReadFile(filepath.Join(folder, "AGENT.md"))
+	if err != nil || string(current) != asset("AGENT.md") {
+		t.Fatal("resume retained obsolete runner policy", err)
+	}
+	archives, err := filepath.Glob(filepath.Join(folder, "resumes", "attempt-*", "AGENT.md"))
+	if err != nil || len(archives) != 1 {
+		t.Fatal("old runner policy not archived", archives, err)
+	}
+	old, err := os.ReadFile(archives[0])
+	if err != nil || string(old) != previous {
+		t.Fatal("old instructions lost", err)
+	}
+	after, err := os.ReadFile(filepath.Join(folder, "context.json"))
+	if err != nil || string(after) != string(original) {
+		t.Fatal("frozen original task changed", err)
 	}
 }

@@ -92,12 +92,16 @@ func TestReportAndReleaseGates(t *testing.T) {
 		t.Fatal(err)
 	}
 	rt := testConfig("/tmp").Projects[projectID]
-	for _, variant := range []string{"valid", "missing-field", "unknown-field", "wrong-type", "bad-enum", "missing-criterion", "failed-criterion", "blank-evidence", "failed-check", "empty-checks", "blocker", "security", "qa", "sha", "foreign-pr", "deployment"} {
+	for _, variant := range []string{"valid", "missing-field", "missing-completion", "completion", "unknown-field", "wrong-type", "bad-enum", "missing-criterion", "failed-criterion", "blank-evidence", "failed-check", "empty-checks", "blocker", "security", "qa", "sha", "foreign-pr", "deployment"} {
 		t.Run(variant, func(t *testing.T) {
 			report := goodReport()
 			switch variant {
 			case "missing-field":
 				delete(report, "qa")
+			case "missing-completion":
+				delete(report, "completion")
+			case "completion":
+				report["completion"] = "automatic"
 			case "unknown-field":
 				report["extra"] = true
 			case "wrong-type":
@@ -129,7 +133,7 @@ func TestReportAndReleaseGates(t *testing.T) {
 			}
 			err := validateReport(report, schema, "result")
 			if err == nil {
-				err = validateResult(report, rt, false)
+				err = validateResult(report, rt)
 			}
 			if (err == nil) != (variant == "valid") {
 				t.Fatalf("%s: %v", variant, err)

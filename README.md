@@ -457,41 +457,39 @@ Final criteria must contain each ID exactly once with identical source text,
 passed status and evidence. Compound blocks still need all their conditions
 verified; complete IDs do not prove the quality of the agent's evidence.
 
-For tasks that explicitly need no product changes, put this header on the first
-nonblank line of the issue description **before its first pickup**:
+The agent selects `completion: "pr"` or `completion: "no-code"` from the frozen
+issue requirements and explains that choice in its report summary. Most tasks
+need a PR: repository changes or an explicit PR requirement use the PR path.
+A comment-only, investigation or other task that can satisfy all requirements
+without product changes uses no-code completion. No special header or label is
+required, and the absence of a PR alone never proves a task is finished.
 
-```text
-Completion: no-code
+Both paths require passed original criteria and relevant checks with evidence,
+security APPROVED, QA passed, no blockers and deployment `not-requested`.
+Repository tests can be inapplicable for a no-code task, but verification of its
+actual outcome remains mandatory. Record verification commands/tools and evidence
+in `checks`; unmet requirements still block completion.
 
-Do not modify product files. Perform the requested investigation or comment,
-and record evidence that each acceptance criterion was satisfied.
-```
+No-code reports set `completion: "no-code"`, `status: "ready"`, an empty `pr_url`
+and `commit_sha` equal to the captured base SHA. The runner verifies the assigned
+branch and origin, a clean checkout including staged/untracked files, and HEAD
+exactly equal to that base. New commits (even empty ones) or product edits prevent
+no-code completion. PR/signature/CI gates apply to PR reports; the runner does not
+manufacture empty commits or PRs for no-code work. Normal launcher prerequisites
+and the configured repository/staging base still apply to both paths.
 
-The header is case insensitive and comes from the frozen original requirements;
-it is not inferred from a missing PR, an empty diff, a label, a title, or a later
-paragraph/code example. Without the header, a verified PR remains mandatory.
-No-code reports use the existing schema: `status: "ready"`, an empty `pr_url`, and
-`commit_sha` equal to the captured base SHA. All original criteria and relevant
-checks still need passing evidence, security APPROVED, QA passed, no blockers,
-and deployment `not-requested`. Repository tests may be inapplicable, but verification
-of the actual requested outcome is mandatory; record the verification command/tool
-and its evidence in `checks`.
+A successful task becomes locally `ready` and moves to **In Review** for human
+review on either path; the runner never automatically marks it Done.
+Finish/recovery comments explicitly identify successful no-code completion.
 
-The runner verifies the assigned branch and origin, a clean checkout including
-staged/untracked files, and HEAD exactly equal to the captured base SHA. New
-commits (even empty commits) or product edits prevent completion. It skips PR,
-commit-signature and GitHub CI gates for this explicit path. No-code runs still
-use the configured repository, staging base and normal launcher prerequisites.
-Successful no-code runs become locally `ready` and move to **In Review** for human
-review; the runner does not mark them Done. Finish/recovery comments explicitly
-say that no code changed and no PR was required.
-
-This path also applies to explicit resume/reconciliation of runs originally
-launched with the header. Adding it to an already captured issue does not authorize
-a policy change: recovery preserves the original requirements and rejects live
-scope edits. For an older blocked sanity test such as MMB-61, leave its retained
-run intact and create a new test issue with the header; do not delete claims to
-force a retry.
+Older reports without a `completion` field remain readable: the runner derives
+the path from their existing PR URL while preserving status, blockers and evidence.
+A previously blocked result is not silently promoted to ready. Explicit managed
+resume can reassess an eligible original task using current runner instructions,
+without repeating completed external actions. Prior instructions are archived
+with the other attempt evidence; issue requirements/context stay frozen. Changed
+scope, ownership, status or cancellation still require inspection and are never
+overwritten. Do not delete claims to force retries.
 
 For default PR completion, required CI is checked with `gh pr checks --required` and compared with the named
 requirements from classic branch protection and all active branch rulesets.

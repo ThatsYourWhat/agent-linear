@@ -150,8 +150,8 @@ func (r *runner) verifyCommits(repo, base string, p gitProfile) error {
 	return nil
 }
 func (r *runner) verifyPR(report map[string]any, rt *route, repo, branch, base, gh string, p gitProfile, requirements []requirement) error {
-	noCode := noCodeCompletion(requirements)
-	if err := validateResult(report, rt, noCode); err != nil {
+	noCode := noCodeCompletion(report)
+	if err := validateResult(report, rt); err != nil {
 		return err
 	}
 	if err := verifyRequirements(report, requirements); err != nil {

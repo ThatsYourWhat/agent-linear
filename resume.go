@@ -74,7 +74,7 @@ func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (
 	if err != nil {
 		return err
 	}
-	for _, name := range []string{"events.jsonl", "stderr.log", "result.json", "failure.txt", "provider-limit.json"} {
+	for _, name := range []string{"events.jsonl", "stderr.log", "result.json", "failure.txt", "provider-limit.json", "AGENT.md"} {
 		raw, e := os.ReadFile(filepath.Join(saved.Scratch, name))
 		if os.IsNotExist(e) {
 			continue
@@ -85,6 +85,9 @@ func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (
 		if e = writeFile(filepath.Join(archive, name), raw); e != nil {
 			return e
 		}
+	}
+	if err = writeFile(filepath.Join(saved.Scratch, "AGENT.md"), []byte(asset("AGENT.md"))); err != nil {
+		return err
 	}
 	if err = writeJSON(filepath.Join(saved.Scratch, "resume-session.json"), map[string]any{"engine": saved.Engine, "session_id": session}); err != nil {
 		return err
@@ -115,7 +118,7 @@ func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (
 	if err != nil {
 		return err
 	}
-	prompt := fmt.Sprintf("Continue only this recorded issue and session in its existing checkout. Inspect partial work and the existing remote branch/PR before changing anything; do not repeat completed external actions. Read %s and the retained worklog. Trusted launch context: %s\nPreserve every original requirement and Git signing profile. Return only JSON matching this schema:\n%s\n", filepath.Join(saved.Scratch, "AGENT.md"), context, asset("result.schema.json"))
+	prompt := fmt.Sprintf("Continue only this recorded issue and session in its existing checkout. Inspect partial work and the existing remote branch/PR before changing anything; do not repeat completed external actions. Read the current runner instructions at %s and the retained worklog. These instructions supersede prior runner policy; reassess workflow-only blockers without changing the original issue requirements. Trusted launch context: %s\nPreserve every original requirement and Git signing profile. Return only JSON matching this schema:\n%s\n", filepath.Join(saved.Scratch, "AGENT.md"), context, asset("result.schema.json"))
 	if err = writeFile(filepath.Join(archive, "prompt.txt"), []byte(prompt)); err != nil {
 		return err
 	}
@@ -134,7 +137,7 @@ func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (
 		return err
 	}
 	body := fmt.Sprintf("Recorded session resumed with status %s. View pull request at %s.", textAt(report, "status"), textAt(report, "pr_url"))
-	if textAt(report, "status") == "ready" && noCodeCompletion(saved.Requirements) {
+	if textAt(report, "status") == "ready" && noCodeCompletion(report) {
 		body = "Recorded session resumed with status ready. No code changes; PR not required."
 	}
 	if err = r.postComment(id, body, archive, "resume"); err != nil {

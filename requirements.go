@@ -11,11 +11,6 @@ type requirement struct {
 	Requirement string `json:"requirement"`
 }
 
-func noCodeCompletion(requirements []requirement) bool {
-	// Only an explicit header in the frozen issue body can waive the default PR gate.
-	return len(requirements) > 1 && strings.EqualFold(strings.TrimSpace(strings.SplitN(requirements[1].Requirement, "\n", 2)[0]), "Completion: no-code")
-}
-
 func issueRequirements(issue map[string]any) []requirement {
 	result := []requirement{{ID: "R1", Requirement: textAt(issue, "title")}}
 	// Keep every source block: extracting only apparent acceptance criteria can omit requirements.

@@ -82,10 +82,18 @@ func validateReport(value any, schema map[string]any, path string) error {
 func validPRURL(url string, rt *route) bool {
 	return regexp.MustCompile(`(?i)^https://github\.com/` + regexp.QuoteMeta(rt.GitHubRepo) + `/pull/\d+$`).MatchString(url)
 }
-func validateResult(report map[string]any, rt *route, noCode bool) error {
+func noCodeCompletion(report map[string]any) bool {
+	return textAt(report, "completion") == "no-code"
+}
+
+func validateResult(report map[string]any, rt *route) error {
 	if textAt(report, "status") != "ready" {
 		return nil
 	}
+	if completion := textAt(report, "completion"); completion != "pr" && completion != "no-code" {
+		return errors.New("ready result requires a PR or no-code completion path")
+	}
+	noCode := noCodeCompletion(report)
 	blockers, ok := report["blockers"].([]any)
 	if !ok || len(blockers) > 0 || textAt(report, "security") != "APPROVED" || textAt(report, "qa") != "passed" {
 		return errors.New("ready result has unresolved QA/security/blockers")
@@ -306,6 +314,13 @@ func readReport(folder string) (map[string]any, error) {
 	var report map[string]any
 	if err = decodeObject(data, &report); err != nil {
 		return nil, err
+	}
+	// Older reports predate the path field; preserve their outcome and blocker evidence.
+	if _, present := report["completion"]; !present {
+		report["completion"] = "pr"
+		if textAt(report, "pr_url") == "" {
+			report["completion"] = "no-code"
+		}
 	}
 	var schema map[string]any
 	if err = json.Unmarshal([]byte(asset("result.schema.json")), &schema); err != nil {
