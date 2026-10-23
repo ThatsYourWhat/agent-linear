@@ -24,6 +24,14 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	if isClaimed(seen) {
 		return nil
 	}
+	current, err := r.claimableIssue(id, project, rt)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		fmt.Fprintf(r.out, "%s: skipped; not ready or assigned to another user\n", identifier)
+		return nil
+	}
 	preflight, err := r.checkProvider(c, rt.RepoPath, runs, db, lock)
 	if err != nil {
 		var limit *providerLimit
@@ -61,6 +69,14 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 		if err = validateIssue(issue, project, rt); err != nil {
 			return err
 		}
+	}
+	current, err = r.claimableIssue(id, project, rt)
+	if err != nil {
+		return err
+	}
+	if current == nil {
+		fmt.Fprintf(r.out, "%s: skipped; ownership/readiness changed before claim\n", identifier)
+		return nil
 	}
 	folder := filepath.Join(runs, id)
 	if err = os.Mkdir(folder, 0700); err != nil {
@@ -134,6 +150,9 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	if err != nil {
 		return err
 	}
+	if owner := textAt(current, "assignee", "id"); owner != "" && owner != assignee {
+		return errors.New("issue owner does not match the authenticated Linear user")
+	}
 	states, err := r.workflowStates(rt.TeamID)
 	if err != nil {
 		return err
@@ -141,7 +160,7 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	if err = r.postComment(id, fmt.Sprintf("Run claimed on %s. Starting work on %s.", hostname, identifier), folder, "start"); err != nil {
 		return errors.New("start comment failed; no feature work launched")
 	}
-	if err = r.updateIssueState(id, states["In Progress"], folder, "start", assignee); err != nil {
+	if err = r.updateIssueState(id, states["In Progress"], folder, "start", assignee, textAt(current, "assignee", "id") == ""); err != nil {
 		return err
 	}
 	repo := filepath.Join(folder, "repo")

@@ -127,9 +127,14 @@ The runner does not load credential files. Credentials are not stored in config,
 issue snapshots, prompts, or the state database, and the Linear key is removed
 from the agent's environment. The runner posts claim and finish comments through
 Linear's API and changes issue status; the key must allow comment creation,
-workflow-state/user reads, and issue updates. At start, the runner assigns the issue
-to the authenticated user returned by Linear's `viewer` query using that runner's
-`LINEAR_API_KEY`, replacing any existing assignee. Each teammate should use their
+workflow-state/user reads, and issue updates. The Linear assignee owns the issue.
+Polling includes unassigned issues and issues assigned to the authenticated user;
+issues assigned to anyone else are excluded. The launcher also checks live
+ownership/readiness before provider availability and again before claiming work,
+including when given a saved snapshot. Existing assignments are preserved: the
+start mutation changes only status for an owned issue and confirms its assignee.
+An unassigned issue is assigned to the authenticated user returned by Linear's
+`viewer` query using that runner's `LINEAR_API_KEY`. Each teammate should use their
 own personal key; the MCP connection and runner key can represent different users.
 No user ID is hardcoded or added to config. Each routed
 team must have exactly one status named `In Progress` and one named `In Review`.
@@ -317,7 +322,9 @@ claim/finish comments and status updates:
 The snapshot uses Linear's `id`, `identifier`, `title`, `description`, `url`,
 and nested `project.id`, `team.id`, `state.id`. Supply the full body and linked
 dependency context. Saved snapshots are deliberate manual inputs, not refreshed
-from Linear. A live target session still needs access to the selected CLI, its provider, and GitHub.
+from Linear for task content; current ownership and readiness are still checked
+live. A stale snapshot cannot take another user's issue. A live target session
+still needs access to the selected CLI, its provider, and GitHub.
 
 After availability is confirmed and the local claim is committed, the runner resolves the authenticated user and
 both team statuses, then posts
@@ -326,8 +333,9 @@ the agent. If that comment cannot be confirmed, the run fails without starting f
 work. It then changes the issue to **In Progress**, confirming the returned issue
 and status IDs before cloning or launching the agent. Missing/ambiguous statuses or
 an unconfirmed start update fail the run before feature work starts.
-The same In Progress mutation assigns the authenticated user, and the response must
-confirm both the status and assignee before work launches. A failed user lookup or
+For an unassigned issue, the same In Progress mutation assigns the authenticated
+user. For an already owned issue it leaves the assignment intact. The response must
+confirm both the status and expected assignee before work launches. A failed user lookup or
 unconfirmed assignment fails the run without launching feature work. The In Review
 update does not change the assignee.
 The comment announces ownership; SQLite remains the local duplicate guard,
@@ -366,8 +374,9 @@ failure preserves the run outcome and logs delivery evidence in the issue's
 scratch directory. Comment bodies, confirmed IDs, and delivery errors are retained
 as `start-comment.*` and `finish-comment.*`. There are no automatic mutation retries:
 after a timeout, check Linear before manually reposting. A killed runner may leave
-only a start comment. A successful run uses seven Linear API requests for user,
-workflow-state and final-issue reads, two status updates and two comments.
+only a start comment. A successful run uses nine Linear API requests for user,
+workflow-state, two ownership/readiness and final-issue reads, two status updates
+and two comments.
 Polling also queries the queue and refreshes eligibility before
 and after the model availability check.
 
@@ -490,8 +499,14 @@ rebuilt from its recorded events), explicitly verify and finish the recorded run
 ```
 
 The command takes the worker lock, refuses processes still using the checkout,
-and checks the original database context against the current route. Run it from
-outside the feature checkout and close shells using that checkout first. It
+and checks the original database context against the current route. It requires
+the authenticated Linear user to be the current assignee. The original user can
+continue while still assigned; a different user must first receive an explicit
+reassignment in Linear. Reassignment authorizes recovery of the existing run,
+preserving its original snapshot and captured Git author/signing profile. It
+does not move session files, change Git identity or start a new implementation.
+Run it from outside the feature checkout and close shells using that checkout
+first. It
 reuses the report, checkout, captured signing profile and PR; it does not launch
 a model, push work or create another PR. It reruns schema, requirement, Git,
 signature, CI and final Linear checks before saving the outcome. Pending CI can
@@ -507,6 +522,16 @@ Runs created before trusted database context was captured, or interrupted before
 that capture, require manual inspection; the command does not invent a snapshot.
 Existing claims remain preserved. Deleting state to force retries can duplicate
 external work.
+
+There is no managed `resume` command. To continue implementation, first confirm
+the issue is assigned to the user whose Linear credentials will be used for
+reconciliation, then use the recorded native Codex/OpenCode resume command from
+the original feature checkout. Manual native-CLI access is not mediated by this
+runner; the owner rule is enforced on pickup and reconciliation. Save the updated
+`result.json` before reconciling. A reassigned user still needs authorized access
+to the retained checkout, session and original signing setup; reassignment alone
+does not provide those resources.
+
 Untouched `deferred` issues are the exception: their availability check may run
 again after cooldown, because no feature session or Linear mutation started.
 

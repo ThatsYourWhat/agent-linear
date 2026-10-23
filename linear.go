@@ -13,7 +13,7 @@ import (
 )
 
 const issueFields = `id identifier title description url updatedAt createdAt
- project { id name } team { id } state { id }
+ project { id name } team { id } state { id } assignee { id isMe }
  relations { nodes { type relatedIssue { identifier state { type } } } }`
 const queueQuery = `query Queue($filter: IssueFilter!, $after: String) {
  issues(first: 50, after: $after, filter: $filter, orderBy: createdAt) {
@@ -62,6 +62,7 @@ func (r *runner) graphql(query string, variables map[string]any, target any) err
 func (r *runner) issues(project string, rt *route, issueID string) ([]map[string]any, error) {
 	eq := func(s string) any { return map[string]any{"id": map[string]any{"eq": s}} }
 	filter := map[string]any{"project": eq(project), "team": eq(rt.TeamID), "state": eq(rt.ReadyStateID)}
+	filter["or"] = []any{map[string]any{"assignee": map[string]any{"null": true}}, map[string]any{"assignee": map[string]any{"isMe": map[string]any{"eq": true}}}}
 	if rt.Label != "" {
 		filter["labels"] = map[string]any{"name": map[string]any{"eq": rt.Label}}
 	}
@@ -101,13 +102,26 @@ func (r *runner) issue(id string) (map[string]any, error) {
 	var data struct {
 		Issue map[string]any `json:"issue"`
 	}
-	if err := r.graphql(`query RunIssue($id: String!) { issue(id: $id) { `+issueFields+` assignee { id } } }`, map[string]any{"id": id}, &data); err != nil {
+	if err := r.graphql(`query RunIssue($id: String!) { issue(id: $id) { `+issueFields+` } }`, map[string]any{"id": id}, &data); err != nil {
 		return nil, err
 	}
 	if textAt(data.Issue, "id") != id {
 		return nil, errors.New("Linear returned no matching current issue")
 	}
 	return data.Issue, nil
+}
+func (r *runner) claimableIssue(id, project string, rt *route) (map[string]any, error) {
+	current, err := r.issue(id)
+	if err != nil {
+		return nil, err
+	}
+	if textAt(current, "state", "id") != rt.ReadyStateID || textAt(current, "assignee", "id") != "" && !boolAt(current["assignee"], "isMe") {
+		return nil, nil
+	}
+	if err = validateIssue(current, project, rt); err != nil {
+		return nil, err
+	}
+	return current, nil
 }
 func (r *runner) workflowStates(team string) (map[string]string, error) {
 	var data struct {
@@ -154,9 +168,9 @@ func (r *runner) viewer() (string, error) {
 	}
 	return data.Viewer.ID, nil
 }
-func (r *runner) updateIssueState(issueID, stateID, folder, stage, assigneeID string) error {
+func (r *runner) updateIssueState(issueID, stateID, folder, stage, assigneeID string, assign bool) error {
 	input := map[string]any{"stateId": stateID}
-	if assigneeID != "" {
+	if assign {
 		input["assigneeId"] = assigneeID
 	}
 	variables := map[string]any{"id": issueID, "input": input}

@@ -433,6 +433,8 @@ type linearFixture struct {
 	moreIssues []map[string]any
 	queueReads int
 	liveState  string
+	liveIssue  string
+	viewerID   string
 }
 
 func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
@@ -459,26 +461,43 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 				}
 			}
 		}
-		current["state"] = map[string]any{"id": progressID}
-		if f.liveState != "" {
+		started := f.liveState != "" && (f.liveIssue == "" || f.liveIssue == textAt(current, "id"))
+		if started {
 			current["state"] = map[string]any{"id": f.liveState}
+			if _, present := current["assignee"]; !present {
+				current["assignee"] = map[string]any{"id": userID}
+			}
 		}
-		current["assignee"] = map[string]any{"id": userID}
-		switch f.outcome {
-		case "cancelled":
-			current["state"] = map[string]any{"id": readyID}
-		case "reassigned":
+		if f.outcome == "owner-after-preflight" && f.queueReads >= 3 {
 			current["assignee"] = map[string]any{"id": projectID}
-		case "edited":
-			current["description"] = "Changed scope"
-		case "retitled":
-			current["title"] = "Changed title"
-		case "moved":
-			current["project"] = map[string]any{"id": userID}
+		}
+		if started {
+			switch f.outcome {
+			case "cancelled":
+				current["state"] = map[string]any{"id": readyID}
+			case "reassigned":
+				current["assignee"] = map[string]any{"id": projectID}
+			case "edited":
+				current["description"] = "Changed scope"
+			case "retitled":
+				current["title"] = "Changed title"
+			case "moved":
+				current["project"] = map[string]any{"id": userID}
+			}
+		}
+		if owner := textAt(current, "assignee", "id"); owner != "" {
+			viewer := f.viewerID
+			if viewer == "" {
+				viewer = userID
+			}
+			current["assignee"] = map[string]any{"id": owner, "isMe": owner == viewer}
 		}
 		data = map[string]any{"issue": current}
 	case strings.Contains(call.Query, "viewer"):
 		id := userID
+		if f.viewerID != "" {
+			id = f.viewerID
+		}
 		if f.outcome == "viewer-error" {
 			id = ""
 		}
@@ -501,6 +520,7 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 			assignee = projectID
 		}
 		f.liveState = state
+		f.liveIssue = textAt(call.Variables, "id")
 		data = map[string]any{"issueUpdate": map[string]any{"success": true, "issue": map[string]any{"id": textAt(call.Variables, "id"), "state": map[string]any{"id": state}, "assignee": map[string]any{"id": assignee}}}}
 	case strings.Contains(call.Query, "commentCreate("):
 		body := textAt(call.Variables, "input", "body")

@@ -74,7 +74,7 @@ func (r *runner) finishRun(db *sql.DB, saved runContext, report map[string]any, 
 			if exists(requestPath) {
 				return errors.New("previous finish mutation may have applied; inspect Linear before authorizing another update")
 			}
-			if err = r.updateIssueState(id, saved.ReviewState, saved.Scratch, "finish", ""); err != nil {
+			if err = r.updateIssueState(id, saved.ReviewState, saved.Scratch, "finish", "", false); err != nil {
 				return err
 			}
 		default:
@@ -118,6 +118,19 @@ func (r *runner) reconcile(c *config, id, runs string, db *sql.DB) error {
 	if err := checkoutIdle(saved.Checkout, saved.Executable); err != nil {
 		return err
 	}
+	viewer, err := r.viewer()
+	if err != nil {
+		return err
+	}
+	current, err := r.issue(id)
+	if err != nil {
+		return err
+	}
+	if textAt(current, "assignee", "id") != viewer {
+		return errors.New("only the currently assigned Linear user may reconcile this issue; reassign it explicitly before continuing")
+	}
+	// Reassignment permits the new owner to finish; retain the original stored launch context.
+	saved.Owner = viewer
 	if saved.Engine == "opencode" {
 		if err := opencodeReport(saved.Scratch); err != nil {
 			return err

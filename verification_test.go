@@ -206,7 +206,7 @@ func TestWorkflowStateAndAssignmentConfirmation(t *testing.T) {
 			r.endpoint = server.URL
 			r.client = server.Client()
 			folder := t.TempDir()
-			err := r.updateIssueState(issueID, progressID, folder, "start", userID)
+			err := r.updateIssueState(issueID, progressID, folder, "start", userID, true)
 			if (err == nil) != (variant == "valid") || count != 1 || !exists(filepath.Join(folder, "start-state-request.json")) || exists(filepath.Join(folder, "start-state.json")) != (variant == "valid") {
 				t.Fatal("unconfirmed/retried mutation", err, count)
 			}
