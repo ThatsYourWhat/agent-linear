@@ -336,6 +336,20 @@ other eligible issues continue, and a corrected issue can run on a later tick.
 Route mismatches and shared provider/authentication failures still stop pickup.
 
 `status` reads the database without taking the worker lock or writing state.
+By default it shows the five most recently started issues, newest first.
+Deferred issues have not started implementation and appear only with `--all`:
+
+```bash
+./agent-linear status
+./agent-linear status --all
+```
+
+Ordering uses each run's original `activity.json` start time; later activity or
+reconciliation does not move an old run to the top. Records without a valid start
+time follow dated runs, ordered by local database insertion order, newest first.
+Health indicators and blocked/failed/interrupted totals always include all history,
+even when an issue is outside the five displayed. This limits display only:
+every claim and artifact remains available for duplicate prevention and recovery.
 It emits the existing four-field run arrays, plus JSON objects for worker-lock
 activity and available per-run phase, launcher PID, host, start time and last
 log activity. A saved PID/claim alone does not prove a process is still alive.

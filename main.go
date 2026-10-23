@@ -187,27 +187,29 @@ func (r *runner) cli() *cobra.Command {
 		{"run", "Process one saved issue snapshot"},
 		{"resume", "Continue one recorded session as its assigned owner"},
 		{"reconcile", "Verify and finish one recorded run without relaunching work"},
-		{"status", "Print locally claimed issues and their saved outcomes"},
+		{"status", "Print health and the five most recently started issues"},
 		{"cron-line", "Preview the five-minute polling entry"},
 		{"install-cron", "Install or replace only this workflow's cron entry"},
 		{"uninstall-cron", "Remove this workflow's cron entry without stopping active work"},
 	}
 	for _, spec := range commands {
 		name := spec.name
-		var dryRun, setup bool
+		var dryRun, setup, all bool
 		var issueFile, project string
 		cmd := &cobra.Command{Use: name, Short: spec.description, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := absPath(configPath)
 			if err != nil {
 				return err
 			}
-			return r.execute(cmd.Name(), path, issueFile, project, dryRun, setup)
+			return r.execute(cmd.Name(), path, issueFile, project, dryRun, setup, all)
 		}}
 		switch name {
 		case "poll", "run":
 			cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Read eligible/claimed issues without starting work")
 		case "install-cron":
 			cmd.Flags().BoolVar(&setup, "setup", false, "Collect project routes before installing cron")
+		case "status":
+			cmd.Flags().BoolVar(&all, "all", false, "Show every recorded issue, including deferred work")
 		}
 		if name == "run" {
 			cmd.Flags().StringVar(&issueFile, "issue-file", "", "Saved issue JSON snapshot")
@@ -227,7 +229,7 @@ func (r *runner) cli() *cobra.Command {
 	return root
 }
 
-func (r *runner) execute(action, configPath, issueFile, project string, dryRun, setup bool) (runErr error) {
+func (r *runner) execute(action, configPath, issueFile, project string, dryRun, setup, all bool) (runErr error) {
 	if action == "setup" {
 		return r.configureProjects(configPath)
 	}
@@ -240,7 +242,7 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	}
 	runs := filepath.Join(r.root, ".runs")
 	if action == "status" {
-		return r.readStatus(runs)
+		return r.readStatus(runs, all)
 	}
 	if err := os.MkdirAll(runs, 0700); err != nil {
 		return err

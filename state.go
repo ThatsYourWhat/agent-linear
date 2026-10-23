@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"syscall"
 	"time"
 
@@ -67,25 +68,58 @@ func claimedStatus(db *sql.DB, id string) (string, error) {
 	}
 	return status, err
 }
-func printStatus(db *sql.DB, out io.Writer) error {
-	rows, err := db.Query("SELECT identifier,status,folder,pr_url FROM runs")
+func printStatus(db *sql.DB, out io.Writer, all bool) error {
+	rows, err := db.Query("SELECT rowid,identifier,status,folder,pr_url FROM runs")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+	type run struct {
+		rowID                           int64
+		identifier, status, folder, url string
+		activity                        map[string]any
+		started                         time.Time
+	}
+	var recent []run
+	newest := func(i, j int) bool {
+		if recent[i].started.Equal(recent[j].started) {
+			return recent[i].rowID > recent[j].rowID
+		}
+		return recent[i].started.After(recent[j].started)
+	}
 	for rows.Next() {
-		var id, status, folder, url string
-		if err = rows.Scan(&id, &status, &folder, &url); err != nil {
+		var item run
+		if err = rows.Scan(&item.rowID, &item.identifier, &item.status, &item.folder, &item.url); err != nil {
 			return err
 		}
-		if err = json.NewEncoder(out).Encode([]string{id, status, folder, url}); err != nil {
+		if !all && item.status == "deferred" {
+			continue
+		}
+		if err = readJSON(filepath.Join(item.folder, "activity.json"), &item.activity); err != nil && !os.IsNotExist(err) {
 			return err
 		}
-		var activity map[string]any
-		if err = readJSON(filepath.Join(folder, "activity.json"), &activity); err == nil {
-			activity["identifier"] = id
+		item.started, _ = time.Parse(time.RFC3339Nano, textAt(item.activity, "started_at"))
+		recent = append(recent, item)
+		if !all && len(recent) > 5 {
+			sort.Slice(recent, newest)
+			recent = recent[:5]
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	sort.Slice(recent, newest)
+	for _, item := range recent {
+		if err = json.NewEncoder(out).Encode([]string{item.identifier, item.status, item.folder, item.url}); err != nil {
+			return err
+		}
+		if activity := item.activity; activity != nil {
+			activity["identifier"] = item.identifier
 			for _, name := range []string{"events.jsonl", "stderr.log"} {
-				if info, e := os.Stat(filepath.Join(folder, name)); e == nil {
+				if info, e := os.Stat(filepath.Join(item.folder, name)); e == nil {
 					previous, _ := time.Parse(time.RFC3339Nano, textAt(activity, "last_activity"))
 					if info.ModTime().After(previous) {
 						activity["last_activity"] = info.ModTime().UTC().Format(time.RFC3339Nano)
@@ -95,14 +129,12 @@ func printStatus(db *sql.DB, out io.Writer) error {
 			if err = json.NewEncoder(out).Encode(activity); err != nil {
 				return err
 			}
-		} else if !os.IsNotExist(err) {
-			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
-func (r *runner) readStatus(runs string) error {
+func (r *runner) readStatus(runs string, all bool) error {
 	active := false
 	lock, err := os.Open(filepath.Join(runs, "worker.lock"))
 	if err == nil {
@@ -147,7 +179,7 @@ func (r *runner) readStatus(runs string) error {
 	if err = json.NewEncoder(r.out).Encode(map[string]any{"attention_required": blocked+failed+interrupted > 0, "blocked_runs": blocked, "failed_runs": failed, "interrupted_runs": interrupted}); err != nil {
 		return err
 	}
-	return printStatus(db, r.out)
+	return printStatus(db, r.out, all)
 }
 
 func recordActivity(folder, phase string) error {
