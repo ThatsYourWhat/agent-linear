@@ -13,7 +13,7 @@ import (
 )
 
 const issueFields = `id identifier title description url updatedAt createdAt
- project { id name } team { id } state { id } assignee { id isMe }
+ project { id name } team { id } state { id type } assignee { id isMe }
  relations { nodes { type relatedIssue { identifier state { type } } } }`
 const queueQuery = `query Queue($filter: IssueFilter!, $after: String) {
  issues(first: 50, after: $after, filter: $filter, orderBy: createdAt) {

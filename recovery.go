@@ -61,8 +61,8 @@ func (r *runner) finishRun(db *sql.DB, saved runContext, report map[string]any, 
 		}
 		requestPath := filepath.Join(saved.Scratch, "finish-state-request.json")
 		state := textAt(current, "state", "id")
-		switch state {
-		case saved.ReviewState:
+		switch {
+		case state == saved.ReviewState || textAt(current, "state", "type") == "completed":
 			var request map[string]any
 			if err = readJSON(requestPath, &request); err != nil && !os.IsNotExist(err) {
 				return err
@@ -70,11 +70,11 @@ func (r *runner) finishRun(db *sql.DB, saved runContext, report map[string]any, 
 			if err == nil && (textAt(request, "id") != id || textAt(request, "input", "stateId") != saved.ReviewState) {
 				return errors.New("recorded finish request conflicts with the verified issue state")
 			}
-			// Verified review is already the desired state; do not replay a transition.
-			if err = writeJSON(filepath.Join(saved.Scratch, "finish-state.json"), map[string]any{"success": true, "issue": current, "already_in_review": true}); err != nil {
+			// Verified review/completion needs no state mutation or backward transition.
+			if err = writeJSON(filepath.Join(saved.Scratch, "finish-state.json"), map[string]any{"success": true, "issue": current, "observed_state": state}); err != nil {
 				return err
 			}
-		case saved.ProgressState:
+		case state == saved.ProgressState:
 			if exists(requestPath) || exists(filepath.Join(saved.Scratch, "finish-state.json")) {
 				return errors.New("previous finish mutation may have applied; inspect Linear before authorizing another update")
 			}

@@ -404,7 +404,9 @@ the runner reads the current Linear issue and checks its owner, project/team,
 title, body, relations and workflow state. A conflict preserves human changes
 and the checkout/PR for inspection. An unchanged In Progress issue moves to
 **In Review** before recording `ready`. If it is already In Review, the same
-verified completion is recorded without another status mutation. A malformed or
+verified completion is recorded without another status mutation. An issue already
+in a completed Linear state is likewise recognized after full verification,
+without moving it back to review. A malformed or
 conflicting saved finish request still requires inspection. Other status changes
 are never overwritten. The launcher owns assignments and workflow transitions;
 the agent returns a report and performs only task-authorized comments/actions.
@@ -610,7 +612,8 @@ before saving the outcome. Pending CI can
 be reconciled after it passes. Repeated successful reconciliation does not repeat
 the status update or its reconciliation comment.
 
-A fully verified, unchanged owned issue already In Review can be confirmed
+A fully verified, unchanged owned issue already In Review or in a completed
+Linear state can be confirmed
 without replaying a transition, including one moved by an agent or integration
 before the launcher finalized. All requirement, ownership, repository and
 applicable PR/CI gates still run. On verified ready, stale active `failure.txt`,

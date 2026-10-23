@@ -181,3 +181,41 @@ func TestObservedCompletionDoesNotOverwriteReopenedIssue(t *testing.T) {
 		t.Fatal("reopened completion replayed state mutation")
 	}
 }
+
+func TestVerifiedCompletionPreservesObservedDone(t *testing.T) {
+	for _, outcome := range []string{"ready", "no-code"} {
+		t.Run(outcome, func(t *testing.T) {
+			root, r, _, api := gapRunner(t, outcome)
+			original := r.command
+			r.command = func(dir string, args ...string) (string, error) {
+				if len(args) > 2 && args[0] == "git" && args[1] == "status" {
+					api.mu.Lock()
+					api.liveState = doneID
+					api.mu.Unlock()
+				}
+				return original(dir, args...)
+			}
+			if err := executeTest(r, "poll"); err != nil {
+				t.Fatal("human-completed valid task falsely failed", err)
+			}
+			db, err := openState(filepath.Join(root, ".runs", "state.sqlite3"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			if status, err := claimedStatus(db, issueID); err != nil || status != "ready" {
+				t.Fatal(status, err)
+			}
+			api.mu.Lock()
+			defer api.mu.Unlock()
+			if api.liveState != doneID {
+				t.Fatal("human completion was overwritten")
+			}
+			for _, call := range api.calls {
+				if textAt(call.Variables, "input", "stateId") == reviewID {
+					t.Fatal("runner moved completed issue back to review")
+				}
+			}
+		})
+	}
+}

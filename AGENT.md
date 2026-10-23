@@ -148,6 +148,9 @@ No-code completion instead requires HEAD to equal the original base SHA with
 no product changes or new commits; PR and GitHub CI checks are inapplicable.
 The launcher moves both paths to In Review after verification for the owner's
 review, never automatically Done. The agent must not perform that transition.
+If the issue is already In Review or already completed by a human/integration,
+return the verified result; the launcher can recognize success without replaying
+a state update or moving a completed issue backwards.
 PR creation alone is not completion when acceptance verification remains pending.
 Deploy-dependent criteria cannot
 pass under the PR-only policy: report blocked for owner release/verification.
