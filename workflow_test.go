@@ -218,7 +218,7 @@ func agentFixture(root, engine string) int {
 	if err != nil || string(original) != "original\n" && !(resumed && string(original) == "feature\n") {
 		return fail("incorrect isolated base")
 	}
-	if !resumed || string(original) == "original\n" {
+	if !strings.HasPrefix(outcome, "no-code") && (!resumed || string(original) == "original\n") {
 		if err = writeFile("app.txt", []byte("feature\n")); err != nil {
 			return fail(err)
 		}
@@ -260,6 +260,12 @@ func agentFixture(root, engine string) int {
 		return fail(err)
 	}
 	report["commit_sha"] = sha
+	if strings.HasPrefix(outcome, "no-code") {
+		report["pr_url"] = ""
+		if outcome == "no-code-blocked" {
+			report["status"] = "blocked"
+		}
+	}
 	switch outcome {
 	case "omitted-criterion":
 		report["criteria"] = criteria[:len(criteria)-1]

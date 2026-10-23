@@ -129,7 +129,7 @@ func TestReportAndReleaseGates(t *testing.T) {
 			}
 			err := validateReport(report, schema, "result")
 			if err == nil {
-				err = validateResult(report, rt)
+				err = validateResult(report, rt, false)
 			}
 			if (err == nil) != (variant == "valid") {
 				t.Fatalf("%s: %v", variant, err)

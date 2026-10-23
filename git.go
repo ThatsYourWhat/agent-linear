@@ -150,7 +150,8 @@ func (r *runner) verifyCommits(repo, base string, p gitProfile) error {
 	return nil
 }
 func (r *runner) verifyPR(report map[string]any, rt *route, repo, branch, base, gh string, p gitProfile, requirements []requirement) error {
-	if err := validateResult(report, rt); err != nil {
+	noCode := noCodeCompletion(requirements)
+	if err := validateResult(report, rt, noCode); err != nil {
 		return err
 	}
 	if err := verifyRequirements(report, requirements); err != nil {
@@ -176,16 +177,6 @@ func (r *runner) verifyPR(report map[string]any, rt *route, repo, branch, base, 
 			return errors.New(check.message)
 		}
 	}
-	if _, err := r.command(repo, "git", "merge-base", "--is-ancestor", base, "HEAD"); err != nil {
-		return err
-	}
-	diff, err := r.command(repo, "git", "diff", "--name-only", base, "HEAD")
-	if err != nil {
-		return err
-	}
-	if diff == "" {
-		return errors.New("feature PR contains no product changes")
-	}
 	remote, err := r.command(repo, "git", "remote", "get-url", "origin")
 	if err != nil {
 		return err
@@ -196,6 +187,22 @@ func (r *runner) verifyPR(report map[string]any, rt *route, repo, branch, base, 
 	}
 	if origin != strings.ToLower(rt.GitHubRepo) {
 		return errors.New("agent changed origin")
+	}
+	if noCode {
+		if textAt(report, "commit_sha") != base {
+			return errors.New("no-code completion requires the original base SHA with no new commits")
+		}
+		return nil
+	}
+	if _, err := r.command(repo, "git", "merge-base", "--is-ancestor", base, "HEAD"); err != nil {
+		return err
+	}
+	diff, err := r.command(repo, "git", "diff", "--name-only", base, "HEAD")
+	if err != nil {
+		return err
+	}
+	if diff == "" {
+		return errors.New("feature PR contains no product changes")
 	}
 	if err = r.verifyCommits(repo, base, p); err != nil {
 		return err

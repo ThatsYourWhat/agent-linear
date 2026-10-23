@@ -355,7 +355,8 @@ update does not change the assignee.
 The comment announces ownership; SQLite remains the local duplicate guard,
 and the comment is not a lock across machines.
 
-After verifying a `ready` result (including its PR, required CI and signed commits),
+After verifying a `ready` result (including its PR, required CI and signed commits
+for the default completion path),
 the runner reads the current Linear issue and checks its owner, project/team,
 title, body, relations and expected In Progress state. A conflict preserves the
 human change and the checkout/PR for inspection. Only an unchanged issue moves
@@ -413,7 +414,43 @@ Final criteria must contain each ID exactly once with identical source text,
 passed status and evidence. Compound blocks still need all their conditions
 verified; complete IDs do not prove the quality of the agent's evidence.
 
-Required CI is checked with `gh pr checks --required` and compared with the named
+For tasks that explicitly need no product changes, put this header on the first
+nonblank line of the issue description **before its first pickup**:
+
+```text
+Completion: no-code
+
+Do not modify product files. Perform the requested investigation or comment,
+and record evidence that each acceptance criterion was satisfied.
+```
+
+The header is case insensitive and comes from the frozen original requirements;
+it is not inferred from a missing PR, an empty diff, a label, a title, or a later
+paragraph/code example. Without the header, a verified PR remains mandatory.
+No-code reports use the existing schema: `status: "ready"`, an empty `pr_url`, and
+`commit_sha` equal to the captured base SHA. All original criteria and relevant
+checks still need passing evidence, security APPROVED, QA passed, no blockers,
+and deployment `not-requested`. Repository tests may be inapplicable, but verification
+of the actual requested outcome is mandatory; record the verification command/tool
+and its evidence in `checks`.
+
+The runner verifies the assigned branch and origin, a clean checkout including
+staged/untracked files, and HEAD exactly equal to the captured base SHA. New
+commits (even empty commits) or product edits prevent completion. It skips PR,
+commit-signature and GitHub CI gates for this explicit path. No-code runs still
+use the configured repository, staging base and normal launcher prerequisites.
+Successful no-code runs become locally `ready` and move to **In Review** for human
+review; the runner does not mark them Done. Finish/recovery comments explicitly
+say that no code changed and no PR was required.
+
+This path also applies to explicit resume/reconciliation of runs originally
+launched with the header. Adding it to an already captured issue does not authorize
+a policy change: recovery preserves the original requirements and rejects live
+scope edits. For an older blocked sanity test such as MMB-61, leave its retained
+run intact and create a new test issue with the header; do not delete claims to
+force a retry.
+
+For default PR completion, required CI is checked with `gh pr checks --required` and compared with the named
 requirements from classic branch protection and all active branch rulesets.
 Every declared check must report pass or GitHub's skipped result at the verified
 PR head; pending, missing, failed, cancelled and unreadable checks prevent ready.
@@ -522,7 +559,8 @@ Run it from outside the feature checkout and close shells using that checkout
 first. It
 reuses the report, checkout, captured signing profile and PR; it does not launch
 a model, push work or create another PR. It reruns schema, requirement, Git,
-signature, CI and final Linear checks before saving the outcome. Pending CI can
+and final Linear checks, plus signature/PR/CI gates for default PR completion,
+before saving the outcome. Pending CI can
 be reconciled after it passes. Repeated successful reconciliation does not repeat
 the status update or its reconciliation comment.
 
@@ -558,8 +596,8 @@ Before continuing, previous events, stderr, report and failure evidence are copi
 to `.runs/ISSUE_UUID/resumes/attempt-*/`. Current output is captured afresh and the
 session ID is checkpointed so a failed continuation can be resumed again. A failed
 agent cannot leave its previous report eligible for reconciliation. Successful
-agent output goes through the normal schema, criteria, Git signatures, PR, CI and
-final Linear checks before updating the saved outcome. Completion-check failures
+agent output goes through the normal schema, criteria, Git and final Linear checks,
+plus signatures/PR/CI gates for default PR completion, before updating the saved outcome. Completion-check failures
 retain the fresh report for explicit reconciliation; no partial work is retried by
 cron. A recorded finish-state request requires inspection/reconciliation rather
 than another implementation continuation.

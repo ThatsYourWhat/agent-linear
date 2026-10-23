@@ -132,7 +132,11 @@ func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (
 	if err = r.finishRun(db, saved, report, c.GH); err != nil {
 		return err
 	}
-	if err = r.postComment(id, fmt.Sprintf("Recorded session resumed with status %s. View pull request at %s.", textAt(report, "status"), textAt(report, "pr_url")), archive, "resume"); err != nil {
+	body := fmt.Sprintf("Recorded session resumed with status %s. View pull request at %s.", textAt(report, "status"), textAt(report, "pr_url"))
+	if textAt(report, "status") == "ready" && noCodeCompletion(saved.Requirements) {
+		body = "Recorded session resumed with status ready. No code changes; PR not required."
+	}
+	if err = r.postComment(id, body, archive, "resume"); err != nil {
 		fmt.Fprintln(r.errOut, "Resume outcome preserved; inspect resume comment delivery evidence")
 	}
 	fmt.Fprintf(r.out, "%s: resumed %s %s\n", textAt(saved.Issue, "identifier"), textAt(report, "status"), textAt(report, "pr_url"))

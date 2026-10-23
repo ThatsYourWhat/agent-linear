@@ -82,7 +82,7 @@ func validateReport(value any, schema map[string]any, path string) error {
 func validPRURL(url string, rt *route) bool {
 	return regexp.MustCompile(`(?i)^https://github\.com/` + regexp.QuoteMeta(rt.GitHubRepo) + `/pull/\d+$`).MatchString(url)
 }
-func validateResult(report map[string]any, rt *route) error {
+func validateResult(report map[string]any, rt *route, noCode bool) error {
 	if textAt(report, "status") != "ready" {
 		return nil
 	}
@@ -111,7 +111,10 @@ func validateResult(report map[string]any, rt *route) error {
 	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(textAt(report, "commit_sha")) {
 		return errors.New("ready result requires a full commit SHA")
 	}
-	if !validPRURL(textAt(report, "pr_url"), rt) {
+	if noCode && textAt(report, "pr_url") != "" {
+		return errors.New("no-code completion must not report a PR")
+	}
+	if !noCode && !validPRURL(textAt(report, "pr_url"), rt) {
 		return errors.New("PR URL is outside the routed repository")
 	}
 	if textAt(report, "deployment", "status") != "not-requested" {

@@ -131,6 +131,9 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 			url = "unavailable (no PR URL recorded)"
 		}
 		body := fmt.Sprintf("Run finished on %s with status %s. View pull request at %s. %s", hostname, status, url, resume)
+		if status == "ready" && noCodeCompletion(issueRequirements(issue)) {
+			body = fmt.Sprintf("Run finished on %s with status ready. No code changes; PR not required. Evidence: result.json in the retained run artifacts. %s", hostname, resume)
+		}
 		var limit *providerLimit
 		if errors.As(runErr, &limit) {
 			body += " Provider limit reached after launch; partial work preserved. No automatic retry. " + limit.Error()
