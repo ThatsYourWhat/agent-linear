@@ -401,9 +401,14 @@ and the comment is not a lock across machines.
 After verifying a `ready` result (including its PR, required CI and signed commits
 for the default completion path),
 the runner reads the current Linear issue and checks its owner, project/team,
-title, body, relations and expected In Progress state. A conflict preserves the
-human change and the checkout/PR for inspection. Only an unchanged issue moves
-to **In Review** before recording `ready`. This final read is not an atomic
+title, body, relations and workflow state. A conflict preserves human changes
+and the checkout/PR for inspection. An unchanged In Progress issue moves to
+**In Review** before recording `ready`. If it is already In Review, the same
+verified completion is recorded without another status mutation. A malformed or
+conflicting saved finish request still requires inspection. Other status changes
+are never overwritten. The launcher owns assignments and workflow transitions;
+the agent returns a report and performs only task-authorized comments/actions.
+This final read is not an atomic
 cross-machine lock; [Linear's issue update schema](https://github.com/linear/linear/blob/master/packages/sdk/src/schema.graphql)
 has no expected-version parameter, leaving a read/update race with concurrent edits.
 Blocked, failed, and
@@ -605,10 +610,19 @@ before saving the outcome. Pending CI can
 be reconciled after it passes. Repeated successful reconciliation does not repeat
 the status update or its reconciliation comment.
 
-If an earlier finish request is recorded but unconfirmed, an unchanged owned
-issue already in In Review can confirm that update without replaying it. An
+A fully verified, unchanged owned issue already In Review can be confirmed
+without replaying a transition, including one moved by an agent or integration
+before the launcher finalized. All requirement, ownership, repository and
+applicable PR/CI gates still run. On verified ready, stale active `failure.txt`,
+`reconcile-error.txt` and `provider-limit.json` diagnostics are archived under
+`resolved-errors-*`; their original evidence is retained. Archival-only problems
+are reported without changing a successful task back to failed. Historical logs
+remain an audit of earlier attempts; the saved outcome and current phase reflect
+the completed task. An
 issue still In Progress with a prior finish request remains ambiguous: inspect
 Linear and the retained request before explicitly resolving that checkpoint.
+A human reopening after confirmed completion is likewise preserved rather than
+automatically moved back to review.
 An unconfirmed reconciliation comment is also never automatically reposted.
 Runs created before trusted database context was captured, or interrupted before
 that capture, require manual inspection; the command does not invent a snapshot.

@@ -64,15 +64,18 @@ func (r *runner) finishRun(db *sql.DB, saved runContext, report map[string]any, 
 		switch state {
 		case saved.ReviewState:
 			var request map[string]any
-			if err = readJSON(requestPath, &request); err != nil || textAt(request, "id") != id || textAt(request, "input", "stateId") != saved.ReviewState {
-				return errors.New("issue moved to review outside this run; reconciliation requires inspection")
+			if err = readJSON(requestPath, &request); err != nil && !os.IsNotExist(err) {
+				return err
 			}
-			// A live read confirms an uncertain prior mutation without replaying it.
-			if err = writeJSON(filepath.Join(saved.Scratch, "finish-state.json"), map[string]any{"success": true, "issue": current}); err != nil {
+			if err == nil && (textAt(request, "id") != id || textAt(request, "input", "stateId") != saved.ReviewState) {
+				return errors.New("recorded finish request conflicts with the verified issue state")
+			}
+			// Verified review is already the desired state; do not replay a transition.
+			if err = writeJSON(filepath.Join(saved.Scratch, "finish-state.json"), map[string]any{"success": true, "issue": current, "already_in_review": true}); err != nil {
 				return err
 			}
 		case saved.ProgressState:
-			if exists(requestPath) {
+			if exists(requestPath) || exists(filepath.Join(saved.Scratch, "finish-state.json")) {
 				return errors.New("previous finish mutation may have applied; inspect Linear before authorizing another update")
 			}
 			if err = r.updateIssueState(id, saved.ReviewState, saved.Scratch, "finish", "", false); err != nil {
@@ -85,7 +88,38 @@ func (r *runner) finishRun(db *sql.DB, saved runContext, report map[string]any, 
 	if _, err := db.Exec("UPDATE runs SET status=?,pr_url=? WHERE issue_id=?", textAt(report, "status"), textAt(report, "pr_url"), id); err != nil {
 		return err
 	}
-	return recordActivity(saved.Scratch, textAt(report, "status"))
+	if err := recordActivity(saved.Scratch, textAt(report, "status")); err != nil {
+		return err
+	}
+	if textAt(report, "status") == "ready" {
+		if err := archiveResolvedErrors(saved.Scratch); err != nil {
+			fmt.Fprintln(r.errOut, "Run outcome ready; previous diagnostics could not be archived")
+		}
+	}
+	return nil
+}
+
+func archiveResolvedErrors(folder string) error {
+	archive := ""
+	for _, name := range []string{"failure.txt", "reconcile-error.txt", "provider-limit.json"} {
+		path := filepath.Join(folder, name)
+		if _, err := os.Lstat(path); os.IsNotExist(err) {
+			continue
+		} else if err != nil {
+			return err
+		}
+		if archive == "" {
+			var err error
+			archive, err = os.MkdirTemp(folder, "resolved-errors-")
+			if err != nil {
+				return err
+			}
+		}
+		if err := os.Rename(path, filepath.Join(archive, name)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func loadRecovery(c *config, id, runs string, db *sql.DB) (runContext, error) {

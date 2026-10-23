@@ -37,6 +37,11 @@ The source roles are CEO, Architect, Builder, QA, Security, and DevOps.
   explicit reassignment first. Do not take over someone else's assignment or
   start a second implementation to resume partial work. Reassignment does not
   replace the recorded checkout, original work or captured Git signing profile.
+- The launcher alone manages Linear assignments and workflow transitions.
+  Do not call Linear issue-update tools to change assignee/status, including
+  moving an issue to In Review or Done. Return the verified result and let the
+  launcher perform the final transition. Issue comments explicitly required by
+  the task are permitted; they do not authorize changing workflow state.
 - Missing/contradictory requirements, unresolved dependencies, unavailable
   required tools, breaking cross-repo contracts, or missing deployment authority
   are blockers. Record precise questions; do not invent acceptance criteria.
@@ -141,7 +146,8 @@ completion also requires an actual PR with the correct base/head/SHA and all
 feature commits authored and signed by the trusted local Git profile.
 No-code completion instead requires HEAD to equal the original base SHA with
 no product changes or new commits; PR and GitHub CI checks are inapplicable.
-Both paths go to In Review for the owner's review, never automatically Done.
+The launcher moves both paths to In Review after verification for the owner's
+review, never automatically Done. The agent must not perform that transition.
 PR creation alone is not completion when acceptance verification remains pending.
 Deploy-dependent criteria cannot
 pass under the PR-only policy: report blocked for owner release/verification.

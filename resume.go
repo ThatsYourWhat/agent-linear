@@ -30,8 +30,8 @@ func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (
 	if textAt(current, "project", "id") != saved.ProjectID || textAt(current, "team", "id") != saved.Route.TeamID || textAt(current, "state", "id") != saved.ProgressState || textAt(current, "title") != textAt(saved.Issue, "title") || textAt(current, "description") != textAt(saved.Issue, "description") || !reflect.DeepEqual(current["relations"], saved.Issue["relations"]) {
 		return errors.New("Linear route, status or requirements changed; inspect before resuming")
 	}
-	if exists(filepath.Join(saved.Scratch, "finish-state-request.json")) {
-		return errors.New("a finish mutation was already requested; inspect and reconcile instead of resuming")
+	if exists(filepath.Join(saved.Scratch, "finish-state-request.json")) || exists(filepath.Join(saved.Scratch, "finish-state.json")) {
+		return errors.New("completion was already requested or confirmed; inspect and reconcile instead of resuming")
 	}
 	session := sessionID(saved.Scratch, saved.Engine)
 	if session == "" {
