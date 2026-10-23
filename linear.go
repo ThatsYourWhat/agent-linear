@@ -97,6 +97,18 @@ func (r *runner) issues(project string, rt *route, issueID string) ([]map[string
 		after = cursor
 	}
 }
+func (r *runner) issue(id string) (map[string]any, error) {
+	var data struct {
+		Issue map[string]any `json:"issue"`
+	}
+	if err := r.graphql(`query RunIssue($id: String!) { issue(id: $id) { `+issueFields+` assignee { id } } }`, map[string]any{"id": id}, &data); err != nil {
+		return nil, err
+	}
+	if textAt(data.Issue, "id") != id {
+		return nil, errors.New("Linear returned no matching current issue")
+	}
+	return data.Issue, nil
+}
 func (r *runner) workflowStates(team string) (map[string]string, error) {
 	var data struct {
 		States *struct {

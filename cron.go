@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 const cronMarker = "# blank-agent-linear"
@@ -31,12 +33,15 @@ func cronText(existing, line string) string {
 	return strings.Join(kept, "\n") + "\n"
 }
 func (r *runner) readCrontab() (string, error) {
+	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Minute)
+	defer cancel()
 	cmd := exec.Command("crontab", "-l")
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	text, err := cmd.Output()
+	err := runProcess(ctx, cmd)
 	if err == nil {
-		return string(text), nil
+		return stdout.String(), nil
 	}
 	var exit *exec.ExitError
 	if errors.As(err, &exit) && exit.ExitCode() == 1 && strings.Contains(strings.ToLower(stderr.String()), "no crontab for") {
@@ -44,12 +49,14 @@ func (r *runner) readCrontab() (string, error) {
 	}
 	return "", errors.New("cannot read existing crontab; nothing was changed")
 }
-func writeCrontab(text string) error {
+func (r *runner) writeCrontab(text string) error {
+	ctx, cancel := context.WithTimeout(r.ctx, 5*time.Minute)
+	defer cancel()
 	cmd := exec.Command("crontab", "-")
 	cmd.Stdin = strings.NewReader(text)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := runProcess(ctx, cmd); err != nil {
 		return fmt.Errorf("crontab write failed: %w", err)
 	}
 	return nil
@@ -67,7 +74,7 @@ func (r *runner) uninstallCron(runs string) error {
 	if err = writeFile(filepath.Join(runs, "crontab.before-uninstall"), []byte(existing)); err != nil {
 		return err
 	}
-	if err = writeCrontab(updated); err != nil {
+	if err = r.writeCrontab(updated); err != nil {
 		return err
 	}
 	actual, err := r.readCrontab()
@@ -106,7 +113,7 @@ func (r *runner) installCron(c *config, configPath, runs string, preview bool) e
 	if err = writeFile(filepath.Join(runs, "crontab.before"), []byte(existing)); err != nil {
 		return err
 	}
-	if err = writeCrontab(cronText(existing, line)); err != nil {
+	if err = r.writeCrontab(cronText(existing, line)); err != nil {
 		return err
 	}
 	actual, err := r.readCrontab()

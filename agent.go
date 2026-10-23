@@ -260,7 +260,9 @@ func (r *runner) launchAgent(c *config, repo, folder, prompt string, env, lesson
 	if lock != nil {
 		cmd.ExtraFiles = []*os.File{lock}
 	}
-	if err = runModel(context.Background(), cmd, out, stderr); err != nil {
+	ctx, cancel := context.WithTimeout(r.ctx, r.featureTimeout)
+	defer cancel()
+	if err = runModel(ctx, cmd, out, stderr); err != nil {
 		return nil, fmt.Errorf("agent %s failed: %w; inspect stderr.log", engine, err)
 	}
 	if engine == "opencode" {
@@ -268,6 +270,9 @@ func (r *runner) launchAgent(c *config, repo, folder, prompt string, env, lesson
 			return nil, err
 		}
 	}
+	return readReport(folder)
+}
+func readReport(folder string) (map[string]any, error) {
 	data, err := os.ReadFile(filepath.Join(folder, "result.json"))
 	if err != nil {
 		return nil, err

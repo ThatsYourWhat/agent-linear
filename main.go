@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"embed"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"syscall"
@@ -30,26 +32,41 @@ type runner struct {
 	endpoint         string
 	command          func(string, ...string) (string, error)
 	preflightTimeout time.Duration
+	featureTimeout   time.Duration
+	ctx              context.Context
 }
 
 func newRunner(executable string) *runner {
 	r := &runner{root: filepath.Dir(executable), executable: executable, in: os.Stdin,
 		out: os.Stdout, errOut: os.Stderr, client: &http.Client{Timeout: 30 * time.Second}, endpoint: "https://api.linear.app/graphql"}
-	r.command = command
+	r.ctx = context.Background()
+	r.command = func(dir string, args ...string) (string, error) {
+		ctx, cancel := context.WithTimeout(r.ctx, 5*time.Minute)
+		defer cancel()
+		return commandContext(ctx, dir, args...)
+	}
 	r.preflightTimeout = 90 * time.Second
+	r.featureTimeout = 2 * time.Hour
 	return r
 }
 
 func command(dir string, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	return commandContext(ctx, dir, args...)
+}
+func commandContext(ctx context.Context, dir string, args ...string) (string, error) {
 	cmd := exec.Command(args[0], args[1:]...)
 	cmd.Dir = dir
-	var stderr bytes.Buffer
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	err := runProcess(ctx, cmd)
+	out := strings.TrimSpace(stdout.String())
 	if err != nil {
-		return "", fmt.Errorf("command %s: %w\n%s", shellJoin(args), err, stderr.String())
+		return out, fmt.Errorf("command %s: %w\n%s", shellJoin(args), err, stderr.String())
 	}
-	return strings.TrimSpace(string(out)), nil
+	return out, nil
 }
 
 func shellQuote(s string) string {
@@ -65,7 +82,30 @@ func shellJoin(args []string) string {
 	}
 	return strings.Join(out, " ")
 }
-func writeFile(path string, data []byte) error { return os.WriteFile(path, data, 0600) }
+func writeFile(path string, data []byte) error {
+	f, err := os.CreateTemp(filepath.Dir(path), ".checkpoint-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	if _, err = f.Write(data); err != nil {
+		return errors.Join(err, f.Close())
+	}
+	if err = f.Sync(); err != nil {
+		return errors.Join(err, f.Close())
+	}
+	if err = f.Close(); err != nil {
+		return err
+	}
+	if err = os.Rename(f.Name(), path); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	return errors.Join(dir.Sync(), dir.Close())
+}
 func writeJSON(path string, v any) error {
 	b, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -145,6 +185,7 @@ func (r *runner) cli() *cobra.Command {
 		{"smoke-test", "Check CLI, repository, signing-profile and Linear read access"},
 		{"poll", "Process the eligible Linear queue serially"},
 		{"run", "Process one saved issue snapshot"},
+		{"reconcile", "Verify and finish one recorded run without relaunching work"},
 		{"status", "Print locally claimed issues and their saved outcomes"},
 		{"cron-line", "Preview the five-minute polling entry"},
 		{"install-cron", "Install or replace only this workflow's cron entry"},
@@ -171,6 +212,10 @@ func (r *runner) cli() *cobra.Command {
 			cmd.Flags().StringVar(&issueFile, "issue-file", "", "Saved issue JSON snapshot")
 			cmd.Flags().StringVar(&project, "project", "", "Configured Linear project UUID")
 		}
+		if name == "reconcile" {
+			cmd.Flags().StringVar(&issueFile, "issue", "", "Recorded issue UUID")
+		}
+		cmd.PreRun = func(cmd *cobra.Command, args []string) { r.ctx = cmd.Context() }
 		root.AddCommand(cmd)
 	}
 	root.AddCommand(&cobra.Command{
@@ -193,6 +238,9 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 		return r.smokeTest(c)
 	}
 	runs := filepath.Join(r.root, ".runs")
+	if action == "status" {
+		return r.readStatus(runs)
+	}
 	if err := os.MkdirAll(runs, 0700); err != nil {
 		return err
 	}
@@ -206,6 +254,9 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	defer lock.Close()
 	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		if errors.Is(err, syscall.EWOULDBLOCK) {
+			if action == "reconcile" {
+				return errors.New("worker still active; reconciliation refused")
+			}
 			fmt.Fprintln(r.out, "Worker already active; skipping this tick")
 			return nil
 		}
@@ -217,9 +268,6 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 		return err
 	}
 	defer db.Close()
-	if action == "status" {
-		return printStatus(db, r.out)
-	}
 	if setup {
 		if err = r.configureProjects(configPath); err != nil {
 			return err
@@ -228,6 +276,9 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	c, err := r.loadConfig(configPath)
 	if err != nil {
 		return err
+	}
+	if action == "reconcile" {
+		return r.reconcile(c, issueFile, runs, db)
 	}
 	_, binary := c.agent()
 	for _, exe := range []string{binary, c.GH} {
@@ -273,6 +324,10 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 		route := c.Projects[item.project]
 		issue := item.issue
 		if err = validateIssue(issue, item.project, route); err != nil {
+			if action == "poll" && errors.Is(err, errIssueBody) {
+				fmt.Fprintf(r.errOut, "%s: skipped: %v\n", textAt(issue, "identifier"), err)
+				continue
+			}
 			return err
 		}
 		seen, e := claimedStatus(db, textAt(issue, "id"))
@@ -300,6 +355,10 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 			issue = fresh[0]
 		}
 		if err = r.runIssue(c, item.project, issue, runs, db, lock, action == "poll"); err != nil {
+			if action == "poll" && errors.Is(err, errIssueBody) {
+				fmt.Fprintf(r.errOut, "%s: skipped: %v\n", textAt(issue, "identifier"), err)
+				continue
+			}
 			var limit *providerLimit
 			if errors.As(err, &limit) && !limit.recordingFailed {
 				fmt.Fprintln(r.out, limit.Error())
@@ -323,7 +382,9 @@ func main() {
 		executable, err = filepath.EvalSymlinks(executable)
 	}
 	if err == nil {
-		err = newRunner(executable).cli().Execute()
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		err = newRunner(executable).cli().ExecuteContext(ctx)
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, redact(err.Error())+": run failed; inspect local artifacts/configuration")

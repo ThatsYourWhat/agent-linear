@@ -44,6 +44,13 @@ The source roles are CEO, Architect, Builder, QA, Security, and DevOps.
    List every requirement and acceptance criterion verbatim with an ID. Inspect
    the repo and prior project lessons. Record scope, dependencies, assumptions,
    baseline SHA, commands, and a short execution plan in scratch `worklog.md`.
+   When the launcher supplies `requirements`, preserve every supplied ID and
+   verbatim source block in the final `criteria` array. These include the title
+   and every body block so intake cannot silently omit a requirement. Break
+   compound blocks into implementation/test steps in the worklog while retaining
+   the original report entries. Do not edit the frozen checklist or substitute
+   a shorter interpretation. `git_profile.settings` contains the captured Git
+   configuration; `git_profile.fingerprints` contains the allowed signing keys.
 2. **Architect.** Trace the real flow and all callers. Reuse existing helpers and
    patterns. Specify the smallest design, invariants, data/API contracts,
    migrations, risks, and verification method for each criterion. Respect locked
@@ -110,6 +117,12 @@ and deployment status `not-requested`. PR creation alone is not completion
 when acceptance verification remains pending. Deploy-dependent criteria cannot
 pass under the PR-only policy: report blocked for owner release/verification.
 Never mark the Linear issue Done just because a PR exists.
+The runner also requires all configured required GitHub status checks at the
+reported PR head to pass (GitHub-skipped checks are accepted). Missing, pending,
+failed, cancelled or unreadable required checks prevent `ready`; preserve the
+report/PR for explicit reconciliation after they pass. Never modify repository
+protection or rulesets to satisfy this gate. Changed Linear ownership, status,
+route or requirements require inspection rather than overwriting human changes.
 
 For blockers, leave a draft PR if useful, and return `blocked` with concrete
 questions. For errors, return `failed` and the command/error plus recovery steps.

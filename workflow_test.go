@@ -33,6 +33,11 @@ func goodReport() map[string]any {
 	if err := json.Unmarshal([]byte(`{"status":"ready","summary":"Handle empty input","pr_url":"https://github.com/acme/widget/pull/12","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","criteria":[{"requirement":"Reject empty input","status":"passed","evidence":"test passed"}],"checks":[{"command":"go test ./...","passed":true,"evidence":"exit 0"}],"security":"APPROVED","qa":"passed","blockers":[],"deployment":{"status":"not-requested","environment":"none","sha":"","url":"","evidence":"PR only"}}`), &result); err != nil {
 		panic(err)
 	}
+	criteria := []any{}
+	for _, item := range issueRequirements(testIssue()) {
+		criteria = append(criteria, map[string]any{"id": item.ID, "requirement": item.Requirement, "status": "passed", "evidence": "test passed"})
+	}
+	result["criteria"] = criteria
 	return result
 }
 func testIssue() map[string]any {
@@ -204,6 +209,9 @@ func agentFixture(root, engine string) int {
 	if _, err = command(repo, args...); err != nil {
 		return fail(err)
 	}
+	if outcome == "silent-stall" {
+		time.Sleep(3 * time.Second)
+	}
 	if outcome == "limit-during" {
 		if engine == "codex" {
 			fmt.Println(`{"type":"turn.failed","error":{"message":"You've hit your usage limit"}}`)
@@ -214,12 +222,23 @@ func agentFixture(root, engine string) int {
 		return 1
 	}
 	report := goodReport()
+	var requirements []requirement
+	if err = readJSON(filepath.Join(folder, "requirements.json"), &requirements); err != nil {
+		return fail(err)
+	}
+	criteria := []any{}
+	for _, item := range requirements {
+		criteria = append(criteria, map[string]any{"id": item.ID, "requirement": item.Requirement, "status": "passed", "evidence": "test passed"})
+	}
+	report["criteria"] = criteria
 	sha, err := command(repo, "git", "rev-parse", "HEAD")
 	if err != nil {
 		return fail(err)
 	}
 	report["commit_sha"] = sha
 	switch outcome {
+	case "omitted-criterion":
+		report["criteria"] = criteria[:len(criteria)-1]
 	case "blocked", "failed":
 		report["status"] = outcome
 	case "invalid-report":
@@ -263,6 +282,53 @@ func agentFixture(root, engine string) int {
 }
 func githubFixture(root string) int {
 	args := strings.Join(os.Args[1:], " ")
+	if strings.HasPrefix(args, "api ") {
+		outcome, err := os.ReadFile(filepath.Join(root, "outcome"))
+		if err != nil || string(outcome) == "ci-policy-error" {
+			return 1
+		}
+		if strings.HasPrefix(args, "api graphql") {
+			contexts := `["tests"]`
+			if string(outcome) == "ci-missing" {
+				contexts = `["tests","lint"]`
+			}
+			if string(outcome) == "ci-no-policy" || string(outcome) == "ci-ruleset-pass" {
+				contexts = `[]`
+			}
+			fmt.Printf(`{"data":{"repository":{"ref":{"branchProtectionRule":{"requiresStatusChecks":true,"requiredStatusCheckContexts":%s}}}}}`, contexts)
+		} else if strings.Contains(args, "/rules/branches/staging") {
+			if string(outcome) == "ci-ruleset-missing" {
+				fmt.Println(`[[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"lint"}]}}]]`)
+			} else if string(outcome) == "ci-ruleset-pass" {
+				fmt.Println(`[[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"tests"}]}}]]`)
+			} else {
+				fmt.Println(`[[]]`)
+			}
+		} else {
+			return 1
+		}
+		return 0
+	}
+	if strings.HasPrefix(args, "pr checks") {
+		outcome, err := os.ReadFile(filepath.Join(root, "outcome"))
+		if err != nil {
+			return 1
+		}
+		bucket := "pass"
+		switch string(outcome) {
+		case "ci-failed":
+			bucket = "fail"
+		case "ci-pending":
+			bucket = "pending"
+		case "ci-error":
+			return 1
+		case "ci-none":
+			fmt.Println(`[]`)
+			return 0
+		}
+		fmt.Printf("[{\"name\":\"tests\",\"bucket\":%q}]\n", bucket)
+		return 0
+	}
 	if strings.HasPrefix(args, "auth status") {
 		return 0
 	}
@@ -292,6 +358,9 @@ func githubFixture(root string) int {
 	base := "staging"
 	if string(outcome) == "wrong-pr" {
 		base = "main"
+	}
+	if string(outcome) == "ci-head-change" && os.Args[len(os.Args)-1] == "headRefOid" {
+		sha = strings.Repeat("b", 40)
 	}
 	err = json.NewEncoder(os.Stdout).Encode(map[string]any{"url": prURL, "state": "OPEN", "isDraft": false, "baseRefName": base, "headRefName": branch, "headRefOid": sha, "isCrossRepository": false})
 	if err != nil {
@@ -363,6 +432,7 @@ type linearFixture struct {
 	issue      map[string]any
 	moreIssues []map[string]any
 	queueReads int
+	liveState  string
 }
 
 func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
@@ -380,6 +450,33 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 	f.calls = append(f.calls, call)
 	var data any
 	switch {
+	case strings.Contains(call.Query, "query RunIssue"):
+		current := testIssue()
+		for _, candidate := range append([]map[string]any{f.issue}, f.moreIssues...) {
+			if textAt(candidate, "id") == textAt(call.Variables, "id") {
+				for key, value := range candidate {
+					current[key] = value
+				}
+			}
+		}
+		current["state"] = map[string]any{"id": progressID}
+		if f.liveState != "" {
+			current["state"] = map[string]any{"id": f.liveState}
+		}
+		current["assignee"] = map[string]any{"id": userID}
+		switch f.outcome {
+		case "cancelled":
+			current["state"] = map[string]any{"id": readyID}
+		case "reassigned":
+			current["assignee"] = map[string]any{"id": projectID}
+		case "edited":
+			current["description"] = "Changed scope"
+		case "retitled":
+			current["title"] = "Changed title"
+		case "moved":
+			current["project"] = map[string]any{"id": userID}
+		}
+		data = map[string]any{"issue": current}
 	case strings.Contains(call.Query, "viewer"):
 		id := userID
 		if f.outcome == "viewer-error" {
@@ -403,6 +500,7 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 		if f.outcome == "assignment-error" {
 			assignee = projectID
 		}
+		f.liveState = state
 		data = map[string]any{"issueUpdate": map[string]any{"success": true, "issue": map[string]any{"id": textAt(call.Variables, "id"), "state": map[string]any{"id": state}, "assignee": map[string]any{"id": assignee}}}}
 	case strings.Contains(call.Query, "commentCreate("):
 		body := textAt(call.Variables, "input", "body")

@@ -102,6 +102,9 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 				runErr = errors.Join(runErr, e)
 			}
 		}
+		if e := recordActivity(folder, status); e != nil {
+			runErr = errors.Join(runErr, e)
+		}
 		resume := engine + " session unavailable (no session ID recorded)."
 		if session := sessionID(folder, engine); session != "" {
 			command := shellJoin([]string{binary, "resume", session})
@@ -124,6 +127,9 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 			fmt.Fprintln(r.errOut, "Run outcome preserved; inspect finish-comment delivery evidence")
 		}
 	}()
+	if err = recordActivity(folder, "starting"); err != nil {
+		return err
+	}
 	assignee, err := r.viewer()
 	if err != nil {
 		return err
@@ -139,6 +145,9 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 		return err
 	}
 	repo := filepath.Join(folder, "repo")
+	if err = recordActivity(folder, "checkout"); err != nil {
+		return err
+	}
 	profile, err := r.gitProfile(rt.RepoPath)
 	if err != nil {
 		return err
@@ -174,8 +183,11 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	if err = writeJSON(filepath.Join(folder, "issue.json"), issue); err != nil {
 		return err
 	}
-	context := map[string]any{"project_id": project, "route": rt, "branch": branch, "base_sha": base, "scratch": folder, "checkout": repo, "git_profile": profile.context(), "engine": engine, "executable": binary, "model": c.Model}
-	if err = writeJSON(filepath.Join(folder, "context.json"), context); err != nil {
+	context := runContext{ProjectID: project, Route: rt, Branch: branch, BaseSHA: base, Scratch: folder, Checkout: repo, Profile: profile, Engine: engine, Executable: binary, Model: c.Model, Issue: issue, Owner: assignee, ProgressState: states["In Progress"], ReviewState: states["In Review"], Requirements: issueRequirements(issue)}
+	if err = saveRunContext(db, id, context); err != nil {
+		return err
+	}
+	if err = writeJSON(filepath.Join(folder, "requirements.json"), context.Requirements); err != nil {
 		return err
 	}
 	if err = writeFile(filepath.Join(folder, "AGENT.md"), []byte(asset("AGENT.md"))); err != nil {
@@ -210,22 +222,20 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	for k, v := range map[string]string{"GIT_AUTHOR_NAME": profile.Settings["user.name"], "GIT_AUTHOR_EMAIL": profile.Settings["user.email"], "GIT_COMMITTER_NAME": profile.Settings["user.name"], "GIT_COMMITTER_EMAIL": profile.Settings["user.email"]} {
 		env = setEnv(env, k, v)
 	}
+	if err = recordActivity(folder, "agent"); err != nil {
+		return err
+	}
 	report, err := r.launchAgent(c, repo, folder, prompt, env, lessons, lock)
 	if err != nil {
 		return err
 	}
 	if candidate := textAt(report, "pr_url"); validPRURL(candidate, rt) {
 		prURL = candidate
-	}
-	if err = r.verifyPR(report, rt, repo, branch, base, c.GH, profile); err != nil {
-		return err
-	}
-	if textAt(report, "status") == "ready" {
-		if err = r.updateIssueState(id, states["In Review"], folder, "finish", ""); err != nil {
+		if _, err = db.Exec("UPDATE runs SET pr_url=? WHERE issue_id=?", prURL, id); err != nil {
 			return err
 		}
 	}
-	if _, err = db.Exec("UPDATE runs SET status=?, pr_url=? WHERE issue_id=?", textAt(report, "status"), textAt(report, "pr_url"), id); err != nil {
+	if err = r.finishRun(db, context, report, c.GH); err != nil {
 		return err
 	}
 	status = textAt(report, "status")

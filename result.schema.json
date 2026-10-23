@@ -11,9 +11,9 @@
       "type": "array",
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["requirement", "status", "evidence"],
+        "required": ["id", "requirement", "status", "evidence"],
         "properties": {
-          "requirement": {"type": "string"},
+          "id": {"type": "string"}, "requirement": {"type": "string"},
           "status": {"type": "string", "enum": ["passed", "failed", "unverified"]},
           "evidence": {"type": "string"}
         }

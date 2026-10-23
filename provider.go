@@ -14,7 +14,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -166,29 +165,9 @@ func runModel(ctx context.Context, cmd *exec.Cmd, out, stderr io.Writer) error {
 	}
 	stdoutStream := &limitStream{file: out, signal: signal}
 	stderrStream := &limitStream{file: stderr, stderr: true, signal: signal}
-	// Kill the CLI and its children when it reports a limit, including internal retries.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.WaitDelay = time.Second
 	cmd.Stdout = stdoutStream
 	cmd.Stderr = stderrStream
-	if err := cmd.Start(); err != nil {
-		return err
-	}
-	done := make(chan struct{})
-	stopped := make(chan struct{})
-	go func() {
-		defer close(stopped)
-		select {
-		case <-ctx.Done():
-			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); err != nil && !errors.Is(err, syscall.ESRCH) {
-				_ = cmd.Process.Kill()
-			}
-		case <-done:
-		}
-	}()
-	err := cmd.Wait()
-	close(done)
-	<-stopped
+	err := runProcess(ctx, cmd)
 	stdoutStream.finish()
 	stderrStream.finish()
 	select {
@@ -255,7 +234,7 @@ func (r *runner) checkProvider(c *config, repo, runs string, db *sql.DB, lock *o
 		return folder, err
 	}
 	defer stderr.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), r.preflightTimeout)
+	ctx, cancel := context.WithTimeout(r.ctx, r.preflightTimeout)
 	defer cancel()
 	cmd := exec.Command(binary, args...)
 	cmd.Dir = repo

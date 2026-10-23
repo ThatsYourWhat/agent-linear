@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -10,18 +11,10 @@ import (
 )
 
 type gitProfile struct {
-	Settings     map[string]string
-	Fingerprints []string
+	Settings     map[string]string `json:"settings"`
+	Fingerprints []string          `json:"fingerprints"`
 }
 
-func (p gitProfile) context() map[string]any {
-	m := map[string]any{}
-	for k, v := range p.Settings {
-		m[k] = v
-	}
-	m["fingerprints"] = p.Fingerprints
-	return m
-}
 func (r *runner) gitProfile(repo string) (gitProfile, error) {
 	p := gitProfile{Settings: map[string]string{}}
 	for _, field := range []string{"user.name", "user.email", "user.signingkey", "gpg.format", "gpg.program", "gpg.openpgp.program", "gpg.ssh.program", "gpg.x509.program", "gpg.ssh.allowedSignersFile", "gpg.ssh.revocationFile"} {
@@ -156,8 +149,11 @@ func (r *runner) verifyCommits(repo, base string, p gitProfile) error {
 	}
 	return nil
 }
-func (r *runner) verifyPR(report map[string]any, rt *route, repo, branch, base, gh string, p gitProfile) error {
+func (r *runner) verifyPR(report map[string]any, rt *route, repo, branch, base, gh string, p gitProfile, requirements []requirement) error {
 	if err := validateResult(report, rt); err != nil {
+		return err
+	}
+	if err := verifyRequirements(report, requirements); err != nil {
 		return err
 	}
 	if textAt(report, "status") != "ready" {
@@ -217,5 +213,105 @@ func (r *runner) verifyPR(report map[string]any, rt *route, repo, branch, base, 
 	if !draftOK || !crossOK || textAt(pr, "url") != textAt(report, "pr_url") || textAt(pr, "state") != "OPEN" || draft || textAt(pr, "baseRefName") != "staging" || textAt(pr, "headRefName") != branch || textAt(pr, "headRefOid") != textAt(report, "commit_sha") || crossRepository {
 		return fmt.Errorf("GitHub PR does not match verified branch/base/SHA or is not ready")
 	}
+	raw, err = r.command(repo, gh, "pr", "checks", textAt(report, "pr_url"), "--repo", rt.GitHubRepo, "--required", "--json", "name,bucket")
+	if err != nil {
+		return fmt.Errorf("required CI checks could not be confirmed: %w", err)
+	}
+	var checksCI []struct{ Name, Bucket string }
+	if err = json.Unmarshal([]byte(raw), &checksCI); err != nil || len(checksCI) == 0 {
+		return errors.New("ready requires at least one confirmed required CI check")
+	}
+	for _, check := range checksCI {
+		if check.Name == "" || (check.Bucket != "pass" && check.Bucket != "skipping") {
+			return errors.New("required CI checks are pending, failed, cancelled or invalid; reconcile after they pass")
+		}
+	}
+	required, err := r.requiredChecks(gh, rt.GitHubRepo)
+	if err != nil {
+		return err
+	}
+	for _, check := range checksCI {
+		if _, known := required[check.Name]; !known {
+			return errors.New("required CI policy changed or check does not match the declared requirements")
+		}
+		required[check.Name] = false
+	}
+	for _, missing := range required {
+		if missing {
+			return errors.New("a required CI check has not reported; reconcile after every required check passes")
+		}
+	}
+	if err = writeJSON(filepath.Join(filepath.Dir(repo), "ci-checks.json"), map[string]any{"sha": textAt(report, "commit_sha"), "checks": checksCI}); err != nil {
+		return err
+	}
+	raw, err = r.command(repo, gh, "pr", "view", textAt(report, "pr_url"), "--repo", rt.GitHubRepo, "--json", "headRefOid")
+	if err != nil {
+		return err
+	}
+	if err = decodeObject([]byte(raw), &pr); err != nil || textAt(pr, "headRefOid") != textAt(report, "commit_sha") {
+		return errors.New("PR head changed during CI verification")
+	}
 	return nil
+}
+
+func (r *runner) requiredChecks(gh, repository string) (map[string]bool, error) {
+	parts := strings.Split(repository, "/")
+	query := `query RequiredChecks($owner: String!, $name: String!) { repository(owner: $owner, name: $name) { ref(qualifiedName: "refs/heads/staging") { branchProtectionRule { requiresStatusChecks requiredStatusCheckContexts } } } }`
+	raw, err := r.command("", gh, "api", "graphql", "-f", "query="+query, "-f", "owner="+parts[0], "-f", "name="+parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("cannot read required CI policy: %w", err)
+	}
+	var policy struct {
+		Data struct {
+			Repository *struct {
+				Ref *struct {
+					Rule *struct {
+						Enabled  bool     `json:"requiresStatusChecks"`
+						Contexts []string `json:"requiredStatusCheckContexts"`
+					} `json:"branchProtectionRule"`
+				} `json:"ref"`
+			} `json:"repository"`
+		} `json:"data"`
+		Errors []json.RawMessage `json:"errors"`
+	}
+	if err = json.Unmarshal([]byte(raw), &policy); err != nil || len(policy.Errors) > 0 || policy.Data.Repository == nil || policy.Data.Repository.Ref == nil {
+		return nil, errors.New("cannot confirm base branch CI policy")
+	}
+	required := map[string]bool{}
+	if rule := policy.Data.Repository.Ref.Rule; rule != nil && rule.Enabled {
+		for _, name := range rule.Contexts {
+			required[name] = true
+		}
+	}
+	raw, err = r.command("", gh, "api", "repos/"+repository+"/rules/branches/staging?per_page=100", "--paginate", "--slurp")
+	if err != nil {
+		return nil, fmt.Errorf("cannot read effective CI rulesets: %w", err)
+	}
+	var pages [][]struct {
+		Type       string `json:"type"`
+		Parameters struct {
+			Checks []struct {
+				Context string `json:"context"`
+			} `json:"required_status_checks"`
+		} `json:"parameters"`
+	}
+	if err = json.Unmarshal([]byte(raw), &pages); err != nil || len(pages) == 0 {
+		return nil, errors.New("invalid effective CI rulesets response")
+	}
+	for _, page := range pages {
+		if page == nil {
+			return nil, errors.New("missing effective CI rulesets page")
+		}
+		for _, rule := range page {
+			if rule.Type == "required_status_checks" {
+				for _, check := range rule.Parameters.Checks {
+					required[check.Context] = true
+				}
+			}
+		}
+	}
+	if len(required) == 0 || required[""] {
+		return nil, errors.New("configure at least one named required CI check before marking runs ready")
+	}
+	return required, nil
 }

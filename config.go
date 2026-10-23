@@ -208,6 +208,9 @@ func (r *runner) validateConfig(c *config) error {
 	}
 	return nil
 }
+
+var errIssueBody = errors.New("issue needs a title and body with requirements and acceptance criteria")
+
 func validateIssue(issue map[string]any, project string, rt *route) error {
 	if !uuidRE.MatchString(textAt(issue, "id")) {
 		return errors.New("invalid Linear issue UUID")
@@ -218,8 +221,8 @@ func validateIssue(issue map[string]any, project string, rt *route) error {
 	if textAt(issue, "project", "id") != project || textAt(issue, "team", "id") != rt.TeamID || textAt(issue, "state", "id") != rt.ReadyStateID {
 		return errors.New("issue does not match the trusted project/team/ready-state route")
 	}
-	if textAt(issue, "title") == "" || strings.TrimSpace(textAt(issue, "description")) == "" {
-		return errors.New("issue needs a title and body with requirements and acceptance criteria")
+	if strings.TrimSpace(textAt(issue, "title")) == "" || strings.TrimSpace(textAt(issue, "description")) == "" {
+		return errIssueBody
 	}
 	return nil
 }

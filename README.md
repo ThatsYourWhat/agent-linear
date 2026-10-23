@@ -146,7 +146,8 @@ that does not authorize the agent to trigger a separate deployment.
 ## Update an existing installation
 
 The JSON configuration fields and existing SQLite `runs` table are unchanged.
-Provider cooldown metadata is added automatically in the same database.
+Provider cooldown metadata and versioned recovery context are added automatically
+in the same database, preserving the existing five-column claims table.
 Existing claims, scratch directories, sessions, and lessons remain usable; there
 is no manual database migration or automatic retry of started work. Keep `config.json` and `.runs` in
 the same checkout, build the executable there, and replace the old marked cron
@@ -242,8 +243,10 @@ Detection watches provider error/retry JSON events and diagnostic stderr for
 recognized limit codes/messages (including HTTP 429). It ignores ordinary
 assistant text and tool-result events. Reported limits interrupt CLI retries;
 unrecognized errors keep the normal failure behavior. A successful check cannot
-guarantee capacity for an entire issue. There is still no overall feature-run
-timeout for silent stalls that do not emit a recognized limit.
+guarantee capacity for an entire issue. Feature sessions have a two-hour deadline;
+git, GitHub, signing and crontab commands have five-minute deadlines. Interrupts
+and deadlines stop the subprocess group, preserve partial work and require
+explicit recovery. Started work is never automatically relaunched.
 
 Availability logs are retained under `.runs/preflight/check-*/`; deferred evidence
 includes `deferred.json`. Started interruptions retain `provider-limit.json`,
@@ -293,7 +296,15 @@ Feature processing is enabled later, only when explicitly requested:
 `--dry-run` queries Linear and reports eligible/previously claimed issues. It
 does not start an agent, clone, push, create a PR, or deploy. It creates only the
 local lock/state files. Real polling refreshes each issue immediately before
-launching, so a withdrawn ready label/state does not start stale work.
+launching, so a withdrawn ready label/state does not start stale work. A missing
+title or body is reported and skipped without claiming or mutating that issue;
+other eligible issues continue, and a corrected issue can run on a later tick.
+Route mismatches and shared provider/authentication failures still stop pickup.
+
+`status` reads the database without taking the worker lock or writing state.
+It emits the existing four-field run arrays, plus JSON objects for worker-lock
+activity and available per-run phase, launcher PID, host, start time and last
+log activity. A saved PID/claim alone does not prove a process is still alive.
 
 For a saved issue snapshot, the same launcher can run with Linear access for
 claim/finish comments and status updates:
@@ -322,8 +333,14 @@ update does not change the assignee.
 The comment announces ownership; SQLite remains the local duplicate guard,
 and the comment is not a lock across machines.
 
-After verifying a `ready` result (including its PR and signed commits), the runner
-changes the issue to **In Review** before recording `ready`. Blocked, failed, and
+After verifying a `ready` result (including its PR, required CI and signed commits),
+the runner reads the current Linear issue and checks its owner, project/team,
+title, body, relations and expected In Progress state. A conflict preserves the
+human change and the checkout/PR for inspection. Only an unchanged issue moves
+to **In Review** before recording `ready`. This final read is not an atomic
+cross-machine lock; [Linear's issue update schema](https://github.com/linear/linear/blob/master/packages/sdk/src/schema.graphql)
+has no expected-version parameter, leaving a read/update race with concurrent edits.
+Blocked, failed, and
 invalid completion results do not trigger this transition. An unconfirmed review
 update fails the run and preserves the result/PR for manual recovery. Failed or
 blocked work otherwise stays In Progress; the runner never moves issues to Done.
@@ -349,9 +366,9 @@ failure preserves the run outcome and logs delivery evidence in the issue's
 scratch directory. Comment bodies, confirmed IDs, and delivery errors are retained
 as `start-comment.*` and `finish-comment.*`. There are no automatic mutation retries:
 after a timeout, check Linear before manually reposting. A killed runner may leave
-only a start comment. A successful run's identity/status lookup and mutations use
-six Linear API requests: one user lookup, one status lookup, two status updates,
-and two comments. Polling also queries the queue and refreshes eligibility before
+only a start comment. A successful run uses seven Linear API requests for user,
+workflow-state and final-issue reads, two status updates and two comments.
+Polling also queries the queue and refreshes eligibility before
 and after the model availability check.
 
 Every launched issue is claimed in `.runs/state.sqlite3` after its model
@@ -365,6 +382,23 @@ check its repository, base/head, SHA, open/non-draft state, and every feature
 commit's raw author, signature validity, and signing-key fingerprint against the
 profile captured before launch. A valid signature from another key is rejected.
 The agent checks the same requirements before pushing.
+
+The runner freezes the issue title and every nonblank-line-separated body block
+as `R1`, `R2`, etc. in `requirements.json` and the database's trusted launch context.
+Final criteria must contain each ID exactly once with identical source text,
+passed status and evidence. Compound blocks still need all their conditions
+verified; complete IDs do not prove the quality of the agent's evidence.
+
+Required CI is checked with `gh pr checks --required` and compared with the named
+requirements from classic branch protection and all active branch rulesets.
+Every declared check must report pass or GitHub's skipped result at the verified
+PR head; pending, missing, failed, cancelled and unreadable checks prevent ready.
+The PR head is checked again afterwards, and `ci-checks.json` retains evidence.
+Repositories must configure at least one named required status check on staging;
+an empty or inaccessible policy is not treated as passing. The agent must never
+change protection or rulesets to bypass this gate. These reads follow
+[GitHub's required-check CLI](https://cli.github.com/manual/gh_pr_checks) and
+[effective branch rules API](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch).
 
 The process holds a nonblocking `flock` for the entire tick; the agent child
 inherits the lock descriptor, so an orphaned session retains the worker lock.
@@ -437,6 +471,8 @@ status for failures; Linear comments provide per-run notifications.
 `.runs/ISSUE_UUID/` retains issue/context/prompt snapshots, product checkout,
 agent JSONL events, selected engine/model, stderr, final structured result, worklog/lessons, and failure
 information. It is ignored by git and created private to the current user.
+Checkpoint files are replaced atomically and synced before later external effects;
+status readers see complete activity records during updates.
 Do not commit it. Retain it until review/deployment is finished, then archive or
 remove it deliberately; there is no automatic cleanup.
 
@@ -446,8 +482,31 @@ process: inspect the event stream/session ID and current agent process/session
 before deciding it died. For recovery, inspect the checkout and actual remote
 branch/PR first. Continue that issue's recorded session with the original
 checkout/context if appropriate; never `resume --last` into a different issue.
-Reconcile the result/PR before any operator-approved reset. This version leaves
-recovery manual; deleting state to force retries can duplicate external work.
+After updating the retained `result.json` from that session (OpenCode's report is
+rebuilt from its recorded events), explicitly verify and finish the recorded run:
+
+```bash
+./agent-linear reconcile --issue ISSUE_UUID
+```
+
+The command takes the worker lock, refuses processes still using the checkout,
+and checks the original database context against the current route. Run it from
+outside the feature checkout and close shells using that checkout first. It
+reuses the report, checkout, captured signing profile and PR; it does not launch
+a model, push work or create another PR. It reruns schema, requirement, Git,
+signature, CI and final Linear checks before saving the outcome. Pending CI can
+be reconciled after it passes. Repeated successful reconciliation does not repeat
+the status update or its reconciliation comment.
+
+If an earlier finish request is recorded but unconfirmed, an unchanged owned
+issue already in In Review can confirm that update without replaying it. An
+issue still In Progress with a prior finish request remains ambiguous: inspect
+Linear and the retained request before explicitly resolving that checkpoint.
+An unconfirmed reconciliation comment is also never automatically reposted.
+Runs created before trusted database context was captured, or interrupted before
+that capture, require manual inspection; the command does not invent a snapshot.
+Existing claims remain preserved. Deleting state to force retries can duplicate
+external work.
 Untouched `deferred` issues are the exception: their availability check may run
 again after cooldown, because no feature session or Linear mutation started.
 
