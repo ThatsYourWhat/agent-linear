@@ -172,6 +172,13 @@ func opencodeReport(folder string) error {
 	return writeFile(filepath.Join(folder, "result.json"), []byte(out.String()+"\n"))
 }
 func sessionID(folder, engine string) string {
+	var recorded map[string]any
+	if readJSON(filepath.Join(folder, "resume-session.json"), &recorded) == nil && textAt(recorded, "engine") == engine {
+		id := textAt(recorded, "session_id")
+		if engine == "codex" && uuidRE.MatchString(id) || engine == "opencode" && regexp.MustCompile(`^ses_[A-Za-z0-9]+$`).MatchString(id) {
+			return id
+		}
+	}
 	f, err := os.Open(filepath.Join(folder, "events.jsonl"))
 	if err != nil {
 		return ""
@@ -210,7 +217,20 @@ func setEnv(env []string, key, value string) []string {
 	}
 	return append(result, prefix+value)
 }
-func (r *runner) launchAgent(c *config, repo, folder, prompt string, env, lessons []string, lock *os.File) (map[string]any, error) {
+func agentEnvironment(profile gitProfile) []string {
+	env := []string{}
+	for _, v := range os.Environ() {
+		if !strings.HasPrefix(v, "LINEAR_API_KEY=") {
+			env = append(env, v)
+		}
+	}
+	for k, v := range map[string]string{"GIT_AUTHOR_NAME": profile.Settings["user.name"], "GIT_AUTHOR_EMAIL": profile.Settings["user.email"], "GIT_COMMITTER_NAME": profile.Settings["user.name"], "GIT_COMMITTER_EMAIL": profile.Settings["user.email"]} {
+		env = setEnv(env, k, v)
+	}
+	return env
+}
+
+func (r *runner) launchAgent(c *config, repo, folder, prompt string, env, lessons []string, lock *os.File, session string) (map[string]any, error) {
 	engine, binary := c.agent()
 	var args []string
 	schemaPath := filepath.Join(folder, "result.schema.json")
@@ -239,7 +259,12 @@ func (r *runner) launchAgent(c *config, repo, folder, prompt string, env, lesson
 		args = append(args, "--model", *c.Model)
 	}
 	if engine == "codex" {
+		if session != "" {
+			args = append(args, "resume", session)
+		}
 		args = append(args, "-")
+	} else if session != "" {
+		args = append(args, "--session", session)
 	}
 	out, err := os.OpenFile(filepath.Join(folder, "events.jsonl"), os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0600)
 	if err != nil {

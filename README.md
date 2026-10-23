@@ -311,6 +311,20 @@ It emits the existing four-field run arrays, plus JSON objects for worker-lock
 activity and available per-run phase, launcher PID, host, start time and last
 log activity. A saved PID/claim alone does not prove a process is still alive.
 
+Real polls atomically record `.runs/poll-attempt.json` on every invocation,
+including ticks skipped while the worker lock is held. `.runs/poll-health.json`
+records the last started/completed poll, last successful completion, outcome and
+a sanitized failure phase. Dry runs do not update health. Provider cooldowns
+are `deferred`, not successful polls. `status` reports missing or older-than-15-minute
+attempts as `polling_stale`, and separately exposes `last_success_stale`. It flags
+failed polls and polls left running without a worker lock, plus counts of blocked,
+failed and interrupted runs needing attention. Health remains readable when
+configuration/authentication fails or the state database is absent.
+These are local health signals available through `status` and the existing cron
+log; they do not send external alerts or prove that cron is installed. A monitor
+must invoke `status` to detect a stopped scheduler. A long active run may have an
+old successful-completion timestamp while later cron ticks continue arriving.
+
 For a saved issue snapshot, the same launcher can run with Linear access for
 claim/finish comments and status updates:
 
@@ -359,15 +373,15 @@ Linear before recovering from a timeout, which may have applied the update.
 After saving the final outcome, the runner posts:
 
 ```text
-Run finished on <hostname> with status <run status>. View pull request at <GitHub PR URL>. Resume the codex session: `codex resume <codex session id>`
+Run finished on <hostname> with status <run status>. View pull request at <GitHub PR URL>. Recorded <engine> session: <session id>. Continue as the assigned owner with `<runner> resume --issue <issue UUID>`; use reconcile when only completion checks remain.
 ```
 
 Finish-comment statuses are `ready`, `blocked`, or `failed`; untouched `deferred`
 issues receive no Linear comment. Session IDs come from CLI events:
 Codex's `thread.started.thread_id` or OpenCode's `sessionID`, not the agent report.
-For OpenCode, the comment supplies `opencode --session ses_...` with the saved
-`OPENCODE_CONFIG_CONTENT` permissions. The executable path follows the run's config. Resume on the named machine
-under the original OS user, from `.runs/ISSUE_UUID/repo`. When no PR URL is recorded,
+The comment supplies the managed resume command for both engines. Resume on the
+named machine under the original OS user, from outside the feature checkout.
+Supply `--config PATH` when using a nondefault routing configuration. When no PR URL is recorded,
 the comment says it is unavailable; when no session ID is recorded, it omits the
 resume command and explains that the session is unavailable. A finish-comment
 failure preserves the run outcome and logs delivery evidence in the issue's
@@ -385,8 +399,9 @@ availability check and before issue mutations, cloning, or feature work starts.
 The existing repository is cloned with separate git metadata; only committed
 source is copied, then the actual remote `staging` SHA is fetched as the base.
 The user's uncommitted checkout stays intact. Branches use
-`linear-IDENTIFIER-UUID8` to avoid collisions. No session resume or role fan-out
-occurs. The agent creates the PR; the runner independently queries GitHub to
+`linear-IDENTIFIER-UUID8` to avoid collisions. Polling starts fresh sessions;
+continuation requires explicit managed resume. Roles run sequentially in that
+session. The agent creates the PR; the runner independently queries GitHub to
 check its repository, base/head, SHA, open/non-draft state, and every feature
 commit's raw author, signature validity, and signing-key fingerprint against the
 profile captured before launch. A valid signature from another key is rejected.
@@ -489,10 +504,8 @@ Blocked, failed, and interrupted claims are **never retried by cron**, even if
 the issue body changes. A `running` database row is a claim, not proof of a live
 process: inspect the event stream/session ID and current agent process/session
 before deciding it died. For recovery, inspect the checkout and actual remote
-branch/PR first. Continue that issue's recorded session with the original
-checkout/context if appropriate; never `resume --last` into a different issue.
-After updating the retained `result.json` from that session (OpenCode's report is
-rebuilt from its recorded events), explicitly verify and finish the recorded run:
+branch/PR first. Continue implementation with managed resume as described below.
+When only verification remains, explicitly verify and finish the recorded run:
 
 ```bash
 ./agent-linear reconcile --issue ISSUE_UUID
@@ -523,14 +536,36 @@ that capture, require manual inspection; the command does not invent a snapshot.
 Existing claims remain preserved. Deleting state to force retries can duplicate
 external work.
 
-There is no managed `resume` command. To continue implementation, first confirm
-the issue is assigned to the user whose Linear credentials will be used for
-reconciliation, then use the recorded native Codex/OpenCode resume command from
-the original feature checkout. Manual native-CLI access is not mediated by this
-runner; the owner rule is enforced on pickup and reconciliation. Save the updated
-`result.json` before reconciling. A reassigned user still needs authorized access
-to the retained checkout, session and original signing setup; reassignment alone
-does not provide those resources.
+To continue implementation as the original owner while still assigned:
+
+```bash
+./agent-linear resume --issue ISSUE_UUID
+```
+
+Run this outside the feature checkout and close shells using that checkout first.
+The command holds the same worker lock as cron for the entire continuation,
+checks live ownership, In Progress status, unchanged scope/route, recorded branch,
+origin and Git signing profile, and refuses an active checkout or missing session.
+Handoffs are not supported by managed resume. It continues the exact recorded
+Codex/OpenCode session, engine and model, preserves partial edits and commits,
+and uses the original signing profile and sandbox/permissions. The Linear API key
+is removed from the agent environment. No replacement session or checkout is created.
+The underlying noninteractive continuation commands follow the
+[Codex command reference](https://learn.chatgpt.com/docs/developer-commands#codex-exec)
+and [OpenCode CLI reference](https://opencode.ai/docs/cli/#run).
+
+Before continuing, previous events, stderr, report and failure evidence are copied
+to `.runs/ISSUE_UUID/resumes/attempt-*/`. Current output is captured afresh and the
+session ID is checkpointed so a failed continuation can be resumed again. A failed
+agent cannot leave its previous report eligible for reconciliation. Successful
+agent output goes through the normal schema, criteria, Git signatures, PR, CI and
+final Linear checks before updating the saved outcome. Completion-check failures
+retain the fresh report for explicit reconciliation; no partial work is retried by
+cron. A recorded finish-state request requires inspection/reconciliation rather
+than another implementation continuation.
+
+Native CLI access remains outside runner enforcement; use managed resume to keep
+ownership checks and the worker lock in effect.
 
 Untouched `deferred` issues are the exception: their availability check may run
 again after cooldown, because no feature session or Linear mutation started.

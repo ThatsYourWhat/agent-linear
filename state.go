@@ -103,19 +103,6 @@ func printStatus(db *sql.DB, out io.Writer) error {
 }
 
 func (r *runner) readStatus(runs string) error {
-	path := filepath.Join(runs, "state.sqlite3")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		fmt.Fprintln(r.out, "No recorded runs")
-		return nil
-	} else if err != nil {
-		return err
-	}
-	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}
-	db, err := sql.Open("sqlite", u.String())
-	if err != nil {
-		return err
-	}
-	defer db.Close()
 	active := false
 	lock, err := os.Open(filepath.Join(runs, "worker.lock"))
 	if err == nil {
@@ -129,6 +116,35 @@ func (r *runner) readStatus(runs string) error {
 		return err
 	}
 	if err = json.NewEncoder(r.out).Encode(map[string]any{"worker_active": active}); err != nil {
+		return err
+	}
+	path := filepath.Join(runs, "state.sqlite3")
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if err = r.printPollHealth(runs, active); err != nil {
+			return err
+		}
+		fmt.Fprintln(r.out, "No recorded runs")
+		return nil
+	} else if err != nil {
+		return err
+	}
+	u := url.URL{Scheme: "file", Path: path, RawQuery: "mode=ro"}
+	db, err := sql.Open("sqlite", u.String())
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if err = r.printPollHealth(runs, active); err != nil {
+		return err
+	}
+	var blocked, failed, interrupted int
+	if err = db.QueryRow("SELECT COALESCE(SUM(status='blocked'),0),COALESCE(SUM(status='failed'),0),COALESCE(SUM(status='running'),0) FROM runs").Scan(&blocked, &failed, &interrupted); err != nil {
+		return err
+	}
+	if active {
+		interrupted = 0
+	}
+	if err = json.NewEncoder(r.out).Encode(map[string]any{"attention_required": blocked+failed+interrupted > 0, "blocked_runs": blocked, "failed_runs": failed, "interrupted_runs": interrupted}); err != nil {
 		return err
 	}
 	return printStatus(db, r.out)

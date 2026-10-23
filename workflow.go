@@ -123,11 +123,8 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 		}
 		resume := engine + " session unavailable (no session ID recorded)."
 		if session := sessionID(folder, engine); session != "" {
-			command := shellJoin([]string{binary, "resume", session})
-			if engine == "opencode" {
-				command = `OPENCODE_CONFIG_CONTENT="$(cat ` + shellQuote(filepath.Join(folder, "opencode.json")) + `)" ` + shellJoin([]string{binary, "--session", session})
-			}
-			resume = fmt.Sprintf("Resume the %s session: `%s`", engine, command)
+			command := shellJoin([]string{r.executable, "resume", "--issue", id})
+			resume = fmt.Sprintf("Recorded %s session: %s. Continue as the assigned owner with `%s`; use reconcile when only completion checks remain.", engine, session, command)
 		}
 		url := prURL
 		if url == "" {
@@ -232,19 +229,11 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	if err = writeFile(filepath.Join(folder, "prompt.txt"), []byte(prompt)); err != nil {
 		return err
 	}
-	env := []string{}
-	for _, v := range os.Environ() {
-		if !strings.HasPrefix(v, "LINEAR_API_KEY=") {
-			env = append(env, v)
-		}
-	}
-	for k, v := range map[string]string{"GIT_AUTHOR_NAME": profile.Settings["user.name"], "GIT_AUTHOR_EMAIL": profile.Settings["user.email"], "GIT_COMMITTER_NAME": profile.Settings["user.name"], "GIT_COMMITTER_EMAIL": profile.Settings["user.email"]} {
-		env = setEnv(env, k, v)
-	}
+	env := agentEnvironment(profile)
 	if err = recordActivity(folder, "agent"); err != nil {
 		return err
 	}
-	report, err := r.launchAgent(c, repo, folder, prompt, env, lessons, lock)
+	report, err := r.launchAgent(c, repo, folder, prompt, env, lessons, lock, "")
 	if err != nil {
 		return err
 	}

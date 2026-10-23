@@ -185,6 +185,7 @@ func (r *runner) cli() *cobra.Command {
 		{"smoke-test", "Check CLI, repository, signing-profile and Linear read access"},
 		{"poll", "Process the eligible Linear queue serially"},
 		{"run", "Process one saved issue snapshot"},
+		{"resume", "Continue one recorded session as its assigned owner"},
 		{"reconcile", "Verify and finish one recorded run without relaunching work"},
 		{"status", "Print locally claimed issues and their saved outcomes"},
 		{"cron-line", "Preview the five-minute polling entry"},
@@ -212,7 +213,7 @@ func (r *runner) cli() *cobra.Command {
 			cmd.Flags().StringVar(&issueFile, "issue-file", "", "Saved issue JSON snapshot")
 			cmd.Flags().StringVar(&project, "project", "", "Configured Linear project UUID")
 		}
-		if name == "reconcile" {
+		if name == "reconcile" || name == "resume" {
 			cmd.Flags().StringVar(&issueFile, "issue", "", "Recorded issue UUID")
 		}
 		cmd.PreRun = func(cmd *cobra.Command, args []string) { r.ctx = cmd.Context() }
@@ -226,7 +227,7 @@ func (r *runner) cli() *cobra.Command {
 	return root
 }
 
-func (r *runner) execute(action, configPath, issueFile, project string, dryRun, setup bool) error {
+func (r *runner) execute(action, configPath, issueFile, project string, dryRun, setup bool) (runErr error) {
 	if action == "setup" {
 		return r.configureProjects(configPath)
 	}
@@ -247,6 +248,12 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	if action == "uninstall-cron" {
 		return r.uninstallCron(runs)
 	}
+	monitorPoll := action == "poll" && !dryRun
+	if monitorPoll {
+		if err := writeJSON(filepath.Join(runs, "poll-attempt.json"), map[string]any{"last_attempt": time.Now().UTC()}); err != nil {
+			return err
+		}
+	}
 	lock, err := os.OpenFile(filepath.Join(runs, "worker.lock"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return err
@@ -254,8 +261,8 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	defer lock.Close()
 	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			if action == "reconcile" {
-				return errors.New("worker still active; reconciliation refused")
+			if action == "reconcile" || action == "resume" {
+				return errors.New("worker still active; recovery refused")
 			}
 			fmt.Fprintln(r.out, "Worker already active; skipping this tick")
 			return nil
@@ -263,6 +270,14 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 		return err
 	}
 	// Do not explicitly unlock: the inherited descriptor must keep orphaned agent work locked.
+	pollOutcome, pollPhase := "success", "state initialization"
+	if monitorPoll {
+		health, err := beginPoll(runs)
+		if err != nil {
+			return err
+		}
+		defer func() { runErr = errors.Join(runErr, finishPoll(runs, health, pollOutcome, pollPhase, runErr)) }()
+	}
 	db, err := openState(filepath.Join(runs, "state.sqlite3"))
 	if err != nil {
 		return err
@@ -273,6 +288,7 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 			return err
 		}
 	}
+	pollPhase = "configuration"
 	c, err := r.loadConfig(configPath)
 	if err != nil {
 		return err
@@ -280,6 +296,10 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	if action == "reconcile" {
 		return r.reconcile(c, issueFile, runs, db)
 	}
+	if action == "resume" {
+		return r.resume(c, issueFile, runs, db, lock)
+	}
+	pollPhase = "executable preflight"
 	_, binary := c.agent()
 	for _, exe := range []string{binary, c.GH} {
 		if _, err = exec.LookPath(exe); err != nil {
@@ -290,16 +310,19 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 		return r.installCron(c, configPath, runs, action == "cron-line")
 	}
 	if !dryRun {
+		pollPhase = "provider cooldown"
 		limit, err := activeCooldown(db, c)
 		if err != nil {
 			return err
 		}
 		if limit != nil {
+			pollOutcome = "deferred"
 			fmt.Fprintln(r.out, limit.Error())
 			return nil
 		}
 	}
 	var queue []queuedIssue
+	pollPhase = "Linear queue read"
 	if action == "run" {
 		if issueFile == "" || c.Projects[project] == nil {
 			return errors.New("run requires --issue-file and a configured --project UUID")
@@ -321,6 +344,7 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 		}
 	}
 	for _, item := range queue {
+		pollPhase = "issue processing"
 		route := c.Projects[item.project]
 		issue := item.issue
 		if err = validateIssue(issue, item.project, route); err != nil {
@@ -361,6 +385,7 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 			}
 			var limit *providerLimit
 			if errors.As(err, &limit) && !limit.recordingFailed {
+				pollOutcome = "deferred"
 				fmt.Fprintln(r.out, limit.Error())
 				return nil
 			}

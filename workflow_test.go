@@ -138,7 +138,8 @@ func agentFixture(root, engine string) int {
 	if !strings.Contains(string(prompt), "Reject empty input") || os.Getenv("LINEAR_API_KEY") != "" || os.Getenv("GIT_AUTHOR_NAME") != "Test" || os.Getenv("GIT_AUTHOR_EMAIL") != "test@example.com" {
 		return fail("invalid prompt/environment")
 	}
-	if !slices.Contains(os.Args, "--model") || slices.Contains(os.Args, "--session") || slices.Contains(os.Args, "resume") {
+	resumed := slices.Contains(os.Args, "resume") || slices.Contains(os.Args, "--session")
+	if !slices.Contains(os.Args, "--model") {
 		return fail("invalid launch arguments")
 	}
 	repo, err := os.Getwd()
@@ -146,6 +147,27 @@ func agentFixture(root, engine string) int {
 		return fail(err)
 	}
 	folder := filepath.Dir(repo)
+	if resumed {
+		flag, expected := "resume", projectID
+		if engine == "opencode" {
+			flag, expected = "--session", "ses_test123"
+		}
+		index := slices.Index(os.Args, flag)
+		if index < 0 || index+1 >= len(os.Args) || os.Args[index+1] != expected || slices.Contains(os.Args, "--last") {
+			return fail("wrong resume session")
+		}
+		lock, e := os.OpenFile(filepath.Join(root, ".runs", "worker.lock"), os.O_WRONLY, 0600)
+		if e != nil {
+			return fail(e)
+		}
+		defer lock.Close()
+		if e = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); !errors.Is(e, syscall.EWOULDBLOCK) {
+			return fail("resume did not inherit worker lock")
+		}
+		if e = writeJSON(filepath.Join(root, "resume-calls.json"), os.Args); e != nil {
+			return fail(e)
+		}
+	}
 	var start map[string]any
 	if err = readJSON(filepath.Join(folder, "start-state.json"), &start); err != nil {
 		return fail(err)
@@ -193,21 +215,23 @@ func agentFixture(root, engine string) int {
 		return fail("fixture process error")
 	}
 	original, err := os.ReadFile("app.txt")
-	if err != nil || string(original) != "original\n" {
+	if err != nil || string(original) != "original\n" && !(resumed && string(original) == "feature\n") {
 		return fail("incorrect isolated base")
 	}
-	if err = writeFile("app.txt", []byte("feature\n")); err != nil {
-		return fail(err)
-	}
-	if _, err = command(repo, "git", "add", "app.txt"); err != nil {
-		return fail(err)
-	}
-	args := []string{"git", "commit", "-S", "-m", "Handle input"}
-	if outcome == "unsigned" {
-		args = []string{"git", "-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "Unsigned"}
-	}
-	if _, err = command(repo, args...); err != nil {
-		return fail(err)
+	if !resumed || string(original) == "original\n" {
+		if err = writeFile("app.txt", []byte("feature\n")); err != nil {
+			return fail(err)
+		}
+		if _, err = command(repo, "git", "add", "app.txt"); err != nil {
+			return fail(err)
+		}
+		args := []string{"git", "commit", "-S", "-m", "Handle input"}
+		if outcome == "unsigned" {
+			args = []string{"git", "-c", "commit.gpgsign=false", "commit", "--no-gpg-sign", "-m", "Unsigned"}
+		}
+		if _, err = command(repo, args...); err != nil {
+			return fail(err)
+		}
 	}
 	if outcome == "silent-stall" {
 		time.Sleep(3 * time.Second)
@@ -277,6 +301,9 @@ func agentFixture(root, engine string) int {
 		if outcome == "error-event" {
 			emit("error", nil)
 		}
+	}
+	if outcome == "resume-report-error" {
+		return fail("fixture failed after writing a report")
 	}
 	return 0
 }
@@ -715,7 +742,7 @@ func lockParentFixture(root string) int {
 	c := testConfig(root)
 	c.Codex = filepath.Join(root, "bin", "lock-child")
 	r := newRunner(filepath.Join(root, "agent-linear"))
-	_, err = r.launchAgent(c, root, root, "lock test", os.Environ(), nil, lock)
+	_, err = r.launchAgent(c, root, root, "lock test", os.Environ(), nil, lock, "")
 	if err != nil {
 		return 1
 	}

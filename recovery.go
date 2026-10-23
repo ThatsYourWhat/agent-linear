@@ -87,35 +87,43 @@ func (r *runner) finishRun(db *sql.DB, saved runContext, report map[string]any, 
 	return recordActivity(saved.Scratch, textAt(report, "status"))
 }
 
-func (r *runner) reconcile(c *config, id, runs string, db *sql.DB) error {
+func loadRecovery(c *config, id, runs string, db *sql.DB) (runContext, error) {
+	var saved runContext
 	if !uuidRE.MatchString(id) {
-		return errors.New("reconcile requires --issue with a recorded issue UUID")
+		return saved, errors.New("recovery requires --issue with a recorded issue UUID")
 	}
 	var raw, folder, status string
 	if err := db.QueryRow("SELECT folder,status FROM runs WHERE issue_id=?", id).Scan(&folder, &status); err != nil {
-		return fmt.Errorf("cannot find recorded run: %w", err)
+		return saved, fmt.Errorf("cannot find recorded run: %w", err)
 	}
 	if !isClaimed(status) {
-		return errors.New("deferred work has no feature session to reconcile")
+		return saved, errors.New("deferred work has no feature session to recover")
 	}
 	if err := db.QueryRow("SELECT context FROM run_context WHERE issue_id=?", id).Scan(&raw); err != nil {
-		return errors.New("run has no trusted recovery context; inspect the retained artifacts manually")
+		return saved, errors.New("run has no trusted recovery context; inspect the retained artifacts manually")
 	}
-	var saved runContext
 	if err := json.Unmarshal([]byte(raw), &saved); err != nil {
-		return err
+		return saved, err
 	}
 	expected := filepath.Join(runs, id)
 	if saved.Route == nil || !reflect.DeepEqual(saved.Route, c.Projects[saved.ProjectID]) || saved.Scratch != expected || folder != expected || saved.Checkout != filepath.Join(expected, "repo") || textAt(saved.Issue, "id") != id || saved.Owner == "" || saved.ProgressState == "" || saved.ReviewState == "" || !reflect.DeepEqual(saved.Requirements, issueRequirements(saved.Issue)) {
-		return errors.New("saved run does not match the configured route and original context")
+		return saved, errors.New("saved run does not match the configured route and original context")
 	}
 	for _, path := range []string{saved.Scratch, saved.Checkout} {
 		actual, err := filepath.EvalSymlinks(path)
 		if err != nil || actual != path {
-			return errors.New("recovery checkout/scratch is missing or redirects outside the recorded path")
+			return saved, errors.New("recovery checkout/scratch is missing or redirects outside the recorded path")
 		}
 	}
 	if err := checkoutIdle(saved.Checkout, saved.Executable); err != nil {
+		return saved, err
+	}
+	return saved, nil
+}
+
+func (r *runner) reconcile(c *config, id, runs string, db *sql.DB) error {
+	saved, err := loadRecovery(c, id, runs, db)
+	if err != nil {
 		return err
 	}
 	viewer, err := r.viewer()
