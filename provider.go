@@ -218,9 +218,7 @@ func (r *runner) checkProvider(c *config, repo, runs string, db *sql.DB, lock *o
 		env = setEnv(env, "OPENCODE_CONFIG_CONTENT", string(b))
 		args = []string{"run", "--format", "json", "--dir", repo, "--agent", "linear-issue"}
 	}
-	if c.Model != nil {
-		args = append(args, "--model", *c.Model)
-	}
+	args = append(args, c.modelArgs()...)
 	if engine == "codex" {
 		args = append(args, "-")
 	}

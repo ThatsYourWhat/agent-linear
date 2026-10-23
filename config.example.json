@@ -1,6 +1,8 @@
 {
   "engine": "codex",
   "codex": "codex",
+  "model": "gpt-6.1-sol",
+  "model_reasoning_effort": "medium",
   "opencode": "opencode",
   "gh": "gh",
   "projects": {

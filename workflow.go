@@ -202,7 +202,7 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	if err = writeJSON(filepath.Join(folder, "issue.json"), issue); err != nil {
 		return err
 	}
-	context := runContext{ProjectID: project, Route: rt, Branch: branch, BaseSHA: base, Scratch: folder, Checkout: repo, Profile: profile, Engine: engine, Executable: binary, Model: c.Model, Issue: issue, Owner: assignee, ProgressState: states["In Progress"], ReviewState: states["In Review"], Requirements: issueRequirements(issue)}
+	context := runContext{ProjectID: project, Route: rt, Branch: branch, BaseSHA: base, Scratch: folder, Checkout: repo, Profile: profile, Engine: engine, Executable: binary, Model: c.Model, ReasoningEffort: c.ReasoningEffort, Issue: issue, Owner: assignee, ProgressState: states["In Progress"], ReviewState: states["In Review"], Requirements: issueRequirements(issue)}
 	if err = saveRunContext(db, id, context); err != nil {
 		return err
 	}

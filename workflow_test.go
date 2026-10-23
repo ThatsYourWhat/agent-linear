@@ -48,6 +48,8 @@ func testConfig(repo string) *config {
 	if err := json.Unmarshal([]byte(asset("config.example.json")), &c); err != nil {
 		panic(err)
 	}
+	// Tests select model settings explicitly; production example pins are not fixture defaults.
+	c.Model, c.ReasoningEffort = nil, nil
 	var rt *route
 	for _, v := range c.Projects {
 		rt = v
@@ -141,6 +143,9 @@ func agentFixture(root, engine string) int {
 	resumed := slices.Contains(os.Args, "resume") || slices.Contains(os.Args, "--session")
 	if !slices.Contains(os.Args, "--model") {
 		return fail("invalid launch arguments")
+	}
+	if err = writeJSON(filepath.Join(root, "agent-args.json"), os.Args); err != nil {
+		return fail(err)
 	}
 	repo, err := os.Getwd()
 	if err != nil {

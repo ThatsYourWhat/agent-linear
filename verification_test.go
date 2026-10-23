@@ -317,6 +317,8 @@ func TestConfigDefaultsAndInvalidValues(t *testing.T) {
 	delete(raw, "engine")
 	delete(raw, "codex")
 	delete(raw, "opencode")
+	delete(raw, "model")
+	delete(raw, "model_reasoning_effort")
 	data, err := json.Marshal(raw)
 	if err != nil {
 		t.Fatal(err)
@@ -328,7 +330,7 @@ func TestConfigDefaultsAndInvalidValues(t *testing.T) {
 	if engine, binary := c.agent(); engine != "codex" || binary != "codex" {
 		t.Fatal("legacy defaults changed")
 	}
-	for _, key := range []string{"engine", "codex", "gh", "model"} {
+	for _, key := range []string{"engine", "codex", "gh", "model", "model_reasoning_effort"} {
 		for _, value := range []any{nil, "", 12} {
 			raw[key] = value
 			data, err = json.Marshal(raw)

@@ -258,9 +258,7 @@ func (r *runner) launchAgent(c *config, repo, folder, prompt string, env, lesson
 		}
 		args = []string{"run", "--format", "json", "--dir", repo, "--agent", "linear-issue"}
 	}
-	if c.Model != nil {
-		args = append(args, "--model", *c.Model)
-	}
+	args = append(args, c.modelArgs()...)
 	if engine == "codex" {
 		if session != "" {
 			args = append(args, "resume", session)

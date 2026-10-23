@@ -14,21 +14,22 @@ import (
 )
 
 type runContext struct {
-	ProjectID     string         `json:"project_id"`
-	Route         *route         `json:"route"`
-	Branch        string         `json:"branch"`
-	BaseSHA       string         `json:"base_sha"`
-	Scratch       string         `json:"scratch"`
-	Checkout      string         `json:"checkout"`
-	Profile       gitProfile     `json:"git_profile"`
-	Engine        string         `json:"engine"`
-	Executable    string         `json:"executable"`
-	Model         *string        `json:"model"`
-	Issue         map[string]any `json:"issue"`
-	Owner         string         `json:"owner"`
-	ProgressState string         `json:"progress_state"`
-	ReviewState   string         `json:"review_state"`
-	Requirements  []requirement  `json:"requirements"`
+	ProjectID       string         `json:"project_id"`
+	Route           *route         `json:"route"`
+	Branch          string         `json:"branch"`
+	BaseSHA         string         `json:"base_sha"`
+	Scratch         string         `json:"scratch"`
+	Checkout        string         `json:"checkout"`
+	Profile         gitProfile     `json:"git_profile"`
+	Engine          string         `json:"engine"`
+	Executable      string         `json:"executable"`
+	Model           *string        `json:"model"`
+	ReasoningEffort *string        `json:"model_reasoning_effort,omitempty"`
+	Issue           map[string]any `json:"issue"`
+	Owner           string         `json:"owner"`
+	ProgressState   string         `json:"progress_state"`
+	ReviewState     string         `json:"review_state"`
+	Requirements    []requirement  `json:"requirements"`
 }
 
 func saveRunContext(db *sql.DB, id string, saved runContext) error {

@@ -14,13 +14,14 @@ import (
 )
 
 type config struct {
-	Engine       string            `json:"engine"`
-	Codex        string            `json:"codex"`
-	OpenCode     string            `json:"opencode"`
-	Model        *string           `json:"model,omitempty"`
-	GH           string            `json:"gh"`
-	Projects     map[string]*route `json:"projects"`
-	projectOrder []string
+	Engine          string            `json:"engine"`
+	Codex           string            `json:"codex"`
+	OpenCode        string            `json:"opencode"`
+	Model           *string           `json:"model,omitempty"`
+	ReasoningEffort *string           `json:"model_reasoning_effort,omitempty"`
+	GH              string            `json:"gh"`
+	Projects        map[string]*route `json:"projects"`
+	projectOrder    []string
 }
 type route struct {
 	TeamID               string `json:"team_id"`
@@ -54,6 +55,18 @@ func (c *config) agent() (string, string) {
 		binary = engine
 	}
 	return engine, binary
+}
+
+func (c *config) modelArgs() []string {
+	var args []string
+	if c.Model != nil {
+		args = append(args, "--model", *c.Model)
+	}
+	if c.ReasoningEffort != nil {
+		value, _ := json.Marshal(*c.ReasoningEffort)
+		args = append(args, "-c", "model_reasoning_effort="+string(value))
+	}
+	return args
 }
 func projectIDs(c *config) []string {
 	if len(c.projectOrder) == len(c.Projects) {
@@ -102,7 +115,7 @@ func decodeConfig(data []byte) (*config, error) {
 			return nil, errors.New("engine must be codex or opencode")
 		}
 	}
-	for _, key := range []string{engine, "model", "gh"} {
+	for _, key := range []string{engine, "model", "model_reasoning_effort", "gh"} {
 		if value, present := raw[key]; present {
 			text, ok := value.(string)
 			if !ok || strings.TrimSpace(text) == "" {
@@ -164,6 +177,9 @@ func (r *runner) validateConfig(c *config) error {
 	}
 	if c.Model != nil && strings.TrimSpace(*c.Model) == "" {
 		return errors.New("model must be a nonempty model name, or omitted")
+	}
+	if c.ReasoningEffort != nil && (engine != "codex" || strings.TrimSpace(*c.ReasoningEffort) == "") {
+		return errors.New("model_reasoning_effort must be a nonempty Codex reasoning level, or omitted")
 	}
 	if c.GH == "" {
 		return errors.New("gh must name an executable")

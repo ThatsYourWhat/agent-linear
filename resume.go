@@ -64,6 +64,7 @@ func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (
 	}
 	resumed := *c
 	resumed.Engine, resumed.Model = saved.Engine, saved.Model
+	resumed.ReasoningEffort = saved.ReasoningEffort
 	resumed.Codex, resumed.OpenCode = saved.Executable, saved.Executable
 	parent := filepath.Join(saved.Scratch, "resumes")
 	if err = os.MkdirAll(parent, 0700); err != nil {

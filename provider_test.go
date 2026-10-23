@@ -16,6 +16,9 @@ func availabilityFixture(root, engine string) int {
 	if os.Getenv("LINEAR_API_KEY") != "" {
 		return 1
 	}
+	if err := writeJSON(filepath.Join(root, "preflight-args.json"), os.Args); err != nil {
+		return 1
+	}
 	data, _ := os.ReadFile(filepath.Join(root, "outcome"))
 	outcome := string(data)
 	log, err := os.OpenFile(filepath.Join(root, "preflight-calls"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)

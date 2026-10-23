@@ -150,7 +150,9 @@ that does not authorize the agent to trigger a separate deployment.
 
 ## Update an existing installation
 
-The JSON configuration fields and existing SQLite `runs` table are unchanged.
+Existing JSON configuration fields and the SQLite `runs` table remain compatible.
+`model_reasoning_effort` is an optional Codex setting; older configurations can
+continue omitting it.
 Provider cooldown metadata and versioned recovery context are added automatically
 in the same database, preserving the existing five-column claims table.
 Existing claims, scratch directories, sessions, and lessons remain usable; there
@@ -174,9 +176,36 @@ preserves other jobs. Keep only one installation polling the same queue.
 
 ## Choose the CLI
 
-Codex is the default, including for existing configs without `engine`. To use
-OpenCode, set these top-level fields in `config.json`, alongside the existing
-`gh` and `projects` fields:
+Codex is the default, including for existing configs without `engine`. Pin its
+model and reasoning at the top level of this runner's `config.json`, alongside
+`gh` and `projects`:
+
+```json
+{
+  "engine": "codex",
+  "model": "gpt-6.1-sol",
+  "model_reasoning_effort": "medium"
+}
+```
+
+The checked-in example pins these values. Both settings are optional in existing
+configs: omitted values use the selected CLI's native settings. Overrides are
+passed explicitly to availability checks and issue sessions using `--model` and
+`-c model_reasoning_effort=...`, following the
+[official OpenAI configuration precedence](https://learn.chatgpt.com/docs/developer-settings).
+The same explicit settings are captured in trusted run context; managed resume
+keeps the recorded model/reasoning overrides when repository defaults change.
+Older runs with no recorded reasoning override keep that unspecified behavior.
+Changing these fields affects new jobs on the next poll; no cron reinstall is needed.
+
+`model_reasoning_effort` accepts a nonempty string for Codex only. Use a level
+advertised by your selected model/client (for example `medium` or `high`);
+Codex validates support during the availability request before issue pickup.
+The runner does not maintain a separate model-specific level list. A malformed,
+null or blank setting is rejected. Remove this field when switching to OpenCode;
+OpenCode configs containing it fail validation rather than silently ignoring it.
+
+To use OpenCode, set these top-level fields in `config.json`:
 
 ```json
 {
@@ -530,7 +559,7 @@ status for failures; Linear comments provide per-run notifications.
 ## Evidence and recovery
 
 `.runs/ISSUE_UUID/` retains issue/context/prompt snapshots, product checkout,
-agent JSONL events, selected engine/model, stderr, final structured result, worklog/lessons, and failure
+agent JSONL events, selected engine/model and explicit reasoning override, stderr, final structured result, worklog/lessons, and failure
 information. It is ignored by git and created private to the current user.
 Checkpoint files are replaced atomically and synced before later external effects;
 status readers see complete activity records during updates.
@@ -585,7 +614,7 @@ The command holds the same worker lock as cron for the entire continuation,
 checks live ownership, In Progress status, unchanged scope/route, recorded branch,
 origin and Git signing profile, and refuses an active checkout or missing session.
 Handoffs are not supported by managed resume. It continues the exact recorded
-Codex/OpenCode session, engine and model, preserves partial edits and commits,
+Codex/OpenCode session, engine, model and explicit reasoning setting, preserves partial edits and commits,
 and uses the original signing profile and sandbox/permissions. The Linear API key
 is removed from the agent environment. No replacement session or checkout is created.
 The underlying noninteractive continuation commands follow the
