@@ -35,7 +35,7 @@ func openState(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
-	if version > 1 {
+	if version > 2 {
 		db.Close()
 		return nil, errors.New("state database is newer than this runner")
 	}
@@ -58,6 +58,25 @@ func openState(path string) (*sql.DB, error) {
 			return nil, err
 		}
 	}
+	if version < 2 {
+		tx, err := db.Begin()
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		if _, err = tx.Exec(`CREATE TABLE provider_recoveries (issue_id TEXT PRIMARY KEY, retry_at INTEGER NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL)`); err == nil {
+			_, err = tx.Exec("PRAGMA user_version=2")
+		}
+		if err != nil {
+			tx.Rollback()
+			db.Close()
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
 	return db, nil
 }
 func claimedStatus(db *sql.DB, id string) (string, error) {
@@ -69,16 +88,16 @@ func claimedStatus(db *sql.DB, id string) (string, error) {
 	return status, err
 }
 func printStatus(db *sql.DB, out io.Writer, all bool) error {
-	rows, err := db.Query("SELECT rowid,identifier,status,folder,pr_url FROM runs")
+	rows, err := db.Query("SELECT rowid,issue_id,identifier,status,folder,pr_url FROM runs")
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
 	type run struct {
-		rowID                           int64
-		identifier, status, folder, url string
-		activity                        map[string]any
-		started                         time.Time
+		rowID                               int64
+		id, identifier, status, folder, url string
+		activity                            map[string]any
+		started                             time.Time
 	}
 	var recent []run
 	newest := func(i, j int) bool {
@@ -89,7 +108,7 @@ func printStatus(db *sql.DB, out io.Writer, all bool) error {
 	}
 	for rows.Next() {
 		var item run
-		if err = rows.Scan(&item.rowID, &item.identifier, &item.status, &item.folder, &item.url); err != nil {
+		if err = rows.Scan(&item.rowID, &item.id, &item.identifier, &item.status, &item.folder, &item.url); err != nil {
 			return err
 		}
 		if !all && item.status == "deferred" {
@@ -112,9 +131,30 @@ func printStatus(db *sql.DB, out io.Writer, all bool) error {
 		return err
 	}
 	sort.Slice(recent, newest)
+	var version int
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil {
+		return err
+	}
 	for _, item := range recent {
 		if err = json.NewEncoder(out).Encode([]string{item.identifier, item.status, item.folder, item.url}); err != nil {
 			return err
+		}
+		if version >= 2 {
+			var state, reason string
+			var retryAt int64
+			err = db.QueryRow("SELECT state,retry_at,reason FROM provider_recoveries WHERE issue_id=?", item.id).Scan(&state, &retryAt, &reason)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return err
+			}
+			if err == nil {
+				recovery := map[string]any{"identifier": item.identifier, "provider_recovery": state, "reason": reason}
+				if state == "waiting" {
+					recovery["next_probe_at"] = time.Unix(retryAt, 0).UTC()
+				}
+				if err = json.NewEncoder(out).Encode(recovery); err != nil {
+					return err
+				}
+			}
 		}
 		if activity := item.activity; activity != nil {
 			activity["identifier"] = item.identifier

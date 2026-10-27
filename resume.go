@@ -12,6 +12,10 @@ import (
 )
 
 func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (runErr error) {
+	// Consume automatic eligibility before validation or any external action.
+	if err := stopProviderRecovery(db, id, "Resume interrupted or failed; inspect retained checkout and logs before manual resume/reconcile"); err != nil {
+		return err
+	}
 	saved, err := loadRecovery(c, id, runs, db)
 	if err != nil {
 		return err
@@ -62,10 +66,7 @@ func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (
 	if saved.Engine != "codex" && saved.Engine != "opencode" || saved.Executable == "" {
 		return errors.New("invalid recorded agent")
 	}
-	resumed := *c
-	resumed.Engine, resumed.Model = saved.Engine, saved.Model
-	resumed.ReasoningEffort = saved.ReasoningEffort
-	resumed.Codex, resumed.OpenCode = saved.Executable, saved.Executable
+	resumed := recordedProvider(c, saved)
 	parent := filepath.Join(saved.Scratch, "resumes")
 	if err = os.MkdirAll(parent, 0700); err != nil {
 		return err
@@ -105,10 +106,25 @@ func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (
 			var limit *providerLimit
 			if errors.As(runErr, &limit) {
 				status = "blocked"
-				runErr = errors.Join(runErr, saveCooldown(db, &resumed, limit), writeJSON(filepath.Join(saved.Scratch, "provider-limit.json"), map[string]any{"status": status, "engine": saved.Engine, "retry_at": limit.RetryAt, "recovery": "Continue the recorded session explicitly; no automatic retry."}))
+				if e := errors.Join(saveCooldown(db, &resumed, limit), writeJSON(filepath.Join(saved.Scratch, "provider-limit.json"), map[string]any{"status": status, "engine": saved.Engine, "retry_at": limit.RetryAt, "recovery": "Cron will check availability and automatically resume the recorded session, subject to recovery checks."})); e != nil {
+					limit.recordingFailed = true
+					runErr = errors.Join(runErr, e)
+				}
 			}
 			_, e := db.Exec("UPDATE runs SET status=? WHERE issue_id=?", status, id)
-			runErr = errors.Join(runErr, e, recordActivity(saved.Scratch, status), writeFile(filepath.Join(saved.Scratch, "failure.txt"), []byte("Managed resume failed; inspect stderr.log, events.jsonl and retained resume attempt.\n")))
+			e = errors.Join(e, recordActivity(saved.Scratch, status), writeFile(filepath.Join(saved.Scratch, "failure.txt"), []byte("Managed resume failed; inspect stderr.log, events.jsonl and retained resume attempt.\n")))
+			if e != nil {
+				if limit != nil {
+					limit.recordingFailed = true
+				}
+				runErr = errors.Join(runErr, e)
+			}
+			if limit != nil && !limit.recordingFailed {
+				if e = queueProviderRecovery(db, id, limit); e != nil {
+					limit.recordingFailed = true
+					runErr = errors.Join(runErr, e)
+				}
+			}
 		}
 	}()
 	if err = recordActivity(saved.Scratch, "resuming"); err != nil {

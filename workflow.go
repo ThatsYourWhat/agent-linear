@@ -101,7 +101,7 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 					limit.recordingFailed = true
 					runErr = errors.Join(runErr, e)
 				}
-				if e := writeJSON(filepath.Join(folder, "provider-limit.json"), map[string]any{"status": "blocked", "engine": engine, "retry_at": limit.RetryAt, "recovery": "Resume the recorded session; inspect checkout/PR before reconciliation. No automatic retry."}); e != nil {
+				if e := writeJSON(filepath.Join(folder, "provider-limit.json"), map[string]any{"status": "blocked", "engine": engine, "retry_at": limit.RetryAt, "recovery": "Cron will check availability and automatically resume the recorded session, subject to recovery checks."}); e != nil {
 					limit.recordingFailed = true
 					runErr = errors.Join(runErr, e)
 				}
@@ -117,6 +117,12 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 					limit.recordingFailed = true
 				}
 				runErr = errors.Join(runErr, e)
+			}
+			if limit != nil && !limit.recordingFailed {
+				if e := queueProviderRecovery(db, id, limit); e != nil {
+					limit.recordingFailed = true
+					runErr = errors.Join(runErr, e)
+				}
 			}
 		}
 		if e := recordActivity(folder, status); e != nil {
@@ -137,7 +143,7 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 		}
 		var limit *providerLimit
 		if errors.As(runErr, &limit) {
-			body += " Provider limit reached after launch; partial work preserved. No automatic retry. " + limit.Error()
+			body += " Provider limit reached after launch; partial work preserved. Cron will check availability and automatically resume the recorded session, subject to recovery checks. " + limit.Error()
 		}
 		// Delivery failure is recorded by postComment; preserve the saved outcome.
 		if e := r.postComment(id, body, folder, "finish"); e != nil {

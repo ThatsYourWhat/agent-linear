@@ -301,6 +301,16 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	if action == "resume" {
 		return r.resume(c, issueFile, runs, db, lock)
 	}
+	if action == "poll" && !dryRun {
+		pollPhase = "provider recovery"
+		handled, deferred, err := r.recoverProvider(c, runs, db, lock)
+		if handled || err != nil {
+			if deferred {
+				pollOutcome = "deferred"
+			}
+			return err
+		}
+	}
 	pollPhase = "executable preflight"
 	_, binary := c.agent()
 	for _, exe := range []string{binary, c.GH} {

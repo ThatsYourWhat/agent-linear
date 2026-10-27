@@ -88,6 +88,9 @@ func (r *runner) finishRun(db *sql.DB, saved runContext, report map[string]any, 
 	if _, err := db.Exec("UPDATE runs SET status=?,pr_url=? WHERE issue_id=?", textAt(report, "status"), textAt(report, "pr_url"), id); err != nil {
 		return err
 	}
+	if _, err := db.Exec("DELETE FROM provider_recoveries WHERE issue_id=?", id); err != nil {
+		return err
+	}
 	if err := recordActivity(saved.Scratch, textAt(report, "status")); err != nil {
 		return err
 	}
@@ -157,6 +160,9 @@ func loadRecovery(c *config, id, runs string, db *sql.DB) (runContext, error) {
 }
 
 func (r *runner) reconcile(c *config, id, runs string, db *sql.DB) error {
+	if err := stopProviderRecovery(db, id, "Manual reconciliation requested; inspect retained result and logs before further recovery"); err != nil {
+		return err
+	}
 	saved, err := loadRecovery(c, id, runs, db)
 	if err != nil {
 		return err

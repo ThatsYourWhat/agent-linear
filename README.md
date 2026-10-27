@@ -156,7 +156,9 @@ continue omitting it.
 Provider cooldown metadata and versioned recovery context are added automatically
 in the same database, preserving the existing five-column claims table.
 Existing claims, scratch directories, sessions, and lessons remain usable; there
-is no manual database migration or automatic retry of started work. Keep `config.json` and `.runs` in
+is no manual database migration. Older started runs remain manual; newly recorded
+provider-limit interruptions can resume automatically after availability succeeds.
+Keep `config.json` and `.runs` in
 the same checkout, build the executable there, and replace the old marked cron
 entry only when ready to activate the Go runner.
 
@@ -219,7 +221,8 @@ Replace `provider/model` with an entry from `opencode models`. `model` is option
 when omitted, the selected CLI uses its own default. Set `engine` back to `codex`
 to use the existing `codex` executable setting. Remove or change `model` when
 switching engines because their model names may differ. Each poll uses the
-configured engine for all project routes; changing it never retries claimed issues.
+configured engine for new work across all project routes. Provider-limit recovery
+uses the interrupted run's recorded engine/model, even after these defaults change.
 The cron entry itself does not change. Prefer absolute executable paths for cron.
 
 Configure provider access once as the OS user that runs cron (`opencode auth login`
@@ -234,8 +237,9 @@ OpenCode support uses `opencode run --format json` with the prompt on stdin,
 verified against version 1.18.14. The runner extracts the final completed text
 from its events into `result.json`; both engines' reports must match
 `result.schema.json` before PR verification. Missing, malformed, interrupted,
-or error results fail the run. There is no engine fallback or automatic retry of
-started work. Untouched issues deferred by a provider limit can be tried later.
+or error results fail the run. There is no engine fallback. Recognized provider
+limits can schedule automatic continuation of the recorded session; other failures
+require manual recovery. Untouched deferred issues can be tried later.
 
 ## Provider capacity and limits
 
@@ -270,8 +274,33 @@ local issue becomes `blocked`, and a finish comment explains the interruption
 and provides the recorded session's resume command when available. The issue
 stays In Progress, the existing assignee and partial checkout/commits are retained,
 and no In Review transition occurs. The provider cooldown also stops other work.
-The blocked issue is never automatically restarted, even after capacity returns:
-inspect the checkout, remote branch and PR, then resume/reconcile manually.
+New provider-limit interruptions also record explicit recovery eligibility in
+SQLite. Before new issue pickup, cron handles one pending recovery per tick.
+After cooldown, it probes using the saved engine, executable, model and reasoning
+settings in the retained checkout. An exact `READY` reply triggers managed resume
+of the same session, preserving edits, commits, signing profile and checkout.
+Another provider limit renews cooldown; repeated limits can keep deferring recovery
+until capacity returns. Recovery takes priority over new issues while waiting.
+
+All managed-resume checks still apply: original owner still assigned, unchanged
+scope/route and In Progress state, inactive checkout, original branch/origin and
+signing profile, recorded session ID, and no prior finish-state request. The worker
+lock covers the entire check and continuation. A failed availability check other
+than a recognized limit, failed validation, ordinary continuation failure, or
+pending/failed completion checks stops automatic recovery and requires manual
+resume/reconciliation. Older blocked runs are not automatically opted in.
+
+Eligibility is consumed before checking/continuing, so a crash during an attempt
+requires inspection rather than automatic replay. Manual resume/reconcile consumes it too;
+only a freshly recognized provider limit schedules another attempt. `status`
+shows `provider_recovery`, `next_probe_at` while waiting, and a manual-action reason
+when automatic recovery stops; `status --all` includes older runs. Detailed failures
+remain in the cron log and retained run artifacts. After inspecting partial work
+and the remote branch/PR, use `resume` or `reconcile` as appropriate.
+
+The first command that opens writable runner state upgrades SQLite to schema version 2 without
+queuing older runs. Earlier binaries reject this version; rollback requires a
+compatible binary or a reviewed state migration. Never delete claims to roll back.
 
 Detection watches provider error/retry JSON events and diagnostic stderr for
 recognized limit codes/messages (including HTTP 429). It ignores ordinary
@@ -280,7 +309,7 @@ unrecognized errors keep the normal failure behavior. A successful check cannot
 guarantee capacity for an entire issue. Feature sessions have a two-hour deadline;
 git, GitHub, signing and crontab commands have five-minute deadlines. Interrupts
 and deadlines stop the subprocess group, preserve partial work and require
-explicit recovery. Started work is never automatically relaunched.
+explicit recovery, except for the recorded provider-limit continuation above.
 
 Availability logs are retained under `.runs/preflight/check-*/`; deferred evidence
 includes `deferred.json`. Started interruptions retain `provider-limit.json`,
@@ -450,8 +479,9 @@ availability check and before issue mutations, cloning, or feature work starts.
 The existing repository is cloned with separate git metadata; only committed
 source is copied, then the actual remote `staging` SHA is fetched as the base.
 The user's uncommitted checkout stays intact. Branches use
-`linear-IDENTIFIER-UUID8` to avoid collisions. Polling starts fresh sessions;
-continuation requires explicit managed resume. Roles run sequentially in that
+`linear-IDENTIFIER-UUID8` to avoid collisions. Polling starts fresh sessions for
+new issues and uses managed resume for scheduled provider-limit recovery.
+Other continuation requires explicit managed resume. Roles run sequentially in that
 session. The agent creates the PR; the runner independently queries GitHub to
 check its repository, base/head, SHA, open/non-draft state, and every feature
 commit's raw author, signature validity, and signing-key fingerprint against the
@@ -585,8 +615,10 @@ status readers see complete activity records during updates.
 Do not commit it. Retain it until review/deployment is finished, then archive or
 remove it deliberately; there is no automatic cleanup.
 
-Blocked, failed, and interrupted claims are **never retried by cron**, even if
-the issue body changes. A `running` database row is a claim, not proof of a live
+Only explicitly recorded provider-limit interruptions receive automatic session
+continuation after a successful availability check. Other blocked, failed, and
+interrupted claims are **never retried by cron**, even if the issue body changes.
+A `running` database row is a claim, not proof of a live
 process: inspect the event stream/session ID and current agent process/session
 before deciding it died. For recovery, inspect the checkout and actual remote
 branch/PR first. Continue implementation with managed resume as described below.
@@ -656,14 +688,14 @@ session ID is checkpointed so a failed continuation can be resumed again. A fail
 agent cannot leave its previous report eligible for reconciliation. Successful
 agent output goes through the normal schema, criteria, Git and final Linear checks,
 plus signatures/PR/CI gates for default PR completion, before updating the saved outcome. Completion-check failures
-retain the fresh report for explicit reconciliation; no partial work is retried by
-cron. A recorded finish-state request requires inspection/reconciliation rather
-than another implementation continuation.
+retain the fresh report for explicit reconciliation. Only recognized provider
+limits schedule another automatic continuation. A recorded finish-state request
+requires inspection/reconciliation rather than another implementation continuation.
 
 Native CLI access remains outside runner enforcement; use managed resume to keep
 ownership checks and the worker lock in effect.
 
-Untouched `deferred` issues are the exception: their availability check may run
+Untouched `deferred` issues also remain eligible: their availability check may run
 again after cooldown, because no feature session or Linear mutation started.
 
 The Go tests exercise real throwaway git repositories with executable Codex/OpenCode

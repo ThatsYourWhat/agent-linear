@@ -167,4 +167,8 @@ questions. For errors, return `failed` and the command/error plus recovery steps
 Write scratch evidence before ending or context compaction: stage, branch/SHA,
 files changed, checks run, open findings, next action. Do not discard or overwrite
 work. Do not resume an unrelated session. The operator will decide how to recover
-an interrupted run; the poller never automatically repeats partial external work.
+an interrupted run. Recognized provider-limit interruptions can be continued by
+the launcher after a successful availability check, using only the recorded
+session and checkout under managed-resume checks. Inspect retained partial work
+and the remote branch/PR before continuing; never repeat completed external actions.
+Other interruptions require explicit operator recovery.

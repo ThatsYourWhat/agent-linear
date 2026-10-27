@@ -158,7 +158,7 @@ func TestLimitsDeferThenRecoverOrPreserveWork(t *testing.T) {
 						t.Fatal("partial commit lost")
 					}
 					comment, err := os.ReadFile(filepath.Join(folder, "finish-comment.txt"))
-					if err != nil || !strings.Contains(string(comment), "partial work preserved") || !strings.Contains(string(comment), "No automatic retry") {
+					if err != nil || !strings.Contains(string(comment), "partial work preserved") || !strings.Contains(string(comment), "automatically resume") {
 						t.Fatal(string(comment), err)
 					}
 				}
@@ -180,6 +180,9 @@ func TestLimitsDeferThenRecoverOrPreserveWork(t *testing.T) {
 				if _, err = db.Exec("UPDATE provider_cooldowns SET retry_at=0"); err != nil {
 					t.Fatal(err)
 				}
+				if _, err = db.Exec("UPDATE provider_recoveries SET retry_at=0"); err != nil {
+					t.Fatal(err)
+				}
 				mustWrite(t, filepath.Join(root, "outcome"), "ready")
 				if err = executeTest(r, "poll"); err != nil {
 					t.Fatal(err)
@@ -196,12 +199,12 @@ func TestLimitsDeferThenRecoverOrPreserveWork(t *testing.T) {
 						t.Fatal("missing completed report")
 					}
 				} else {
-					if status != "blocked" {
-						t.Fatal("partial work was automatically retried")
+					if status != "ready" || !exists(filepath.Join(root, "resume-calls.json")) {
+						t.Fatal("partial work was not resumed", status)
 					}
 					probeCalls, err = os.ReadFile(filepath.Join(root, "preflight-calls"))
-					if err != nil || strings.Count(string(probeCalls), "\n") != 1 {
-						t.Fatal("partial work relaunched", err)
+					if err != nil || strings.Count(string(probeCalls), "\n") != 2 {
+						t.Fatal("resume did not check availability", err)
 					}
 				}
 			})
