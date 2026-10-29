@@ -615,6 +615,30 @@ status readers see complete activity records during updates.
 Do not commit it. Retain it until review/deployment is finished, then archive or
 remove it deliberately; there is no automatic cleanup.
 
+Preview deletion of recorded Codex/OpenCode sessions whose **current Linear
+status name** is exactly `Done`, `Canceled`, or `Duplicate`:
+
+```bash
+./agent-linear prune-sessions
+./agent-linear prune-sessions --apply
+```
+
+The first command only previews; `--apply` permanently deletes eligible sessions
+using the recorded CLI executable. It requires `LINEAR_API_KEY` and checks Linear
+again on each invocation. `In Review` and all other status names are excluded,
+regardless of the local run result or Linear state type. There is no age cutoff.
+Running/deferred runs and waiting provider recoveries are excluded, and the worker
+lock and checkout process checks prevent pruning during managed work. Missing or
+conflicting context, changed routes, API errors, and CLI failures retain the
+affected session and return an error; other eligible records can still be pruned.
+
+Successful deletions are recorded in `session-pruned.json` so subsequent commands
+skip them. Deletion removes the ability to resume the session; OpenCode also
+deletes its child sessions. Use a Codex version supporting `delete --force` and
+an OpenCode version supporting `session delete`. Run records, checkouts, event
+logs, reports and lessons under `.runs/` are retained and need separate cleanup.
+This command does not schedule cleanup or change Linear issues.
+
 Only explicitly recorded provider-limit interruptions receive automatic session
 continuation after a successful availability check. Other blocked, failed, and
 interrupted claims are **never retried by cron**, even if the issue body changes.

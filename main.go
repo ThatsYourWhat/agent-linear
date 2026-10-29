@@ -188,18 +188,22 @@ func (r *runner) cli() *cobra.Command {
 		{"resume", "Continue one recorded session as its assigned owner"},
 		{"reconcile", "Verify and finish one recorded run without relaunching work"},
 		{"status", "Print health and the five most recently started issues"},
+		{"prune-sessions", "Preview session deletion for Done, Canceled or Duplicate issues"},
 		{"cron-line", "Preview the five-minute polling entry"},
 		{"install-cron", "Install or replace only this workflow's cron entry"},
 		{"uninstall-cron", "Remove this workflow's cron entry without stopping active work"},
 	}
 	for _, spec := range commands {
 		name := spec.name
-		var dryRun, setup, all bool
+		var dryRun, setup, all, apply bool
 		var issueFile, project string
 		cmd := &cobra.Command{Use: name, Short: spec.description, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := absPath(configPath)
 			if err != nil {
 				return err
+			}
+			if cmd.Name() == "prune-sessions" {
+				dryRun = !apply
 			}
 			return r.execute(cmd.Name(), path, issueFile, project, dryRun, setup, all)
 		}}
@@ -210,6 +214,8 @@ func (r *runner) cli() *cobra.Command {
 			cmd.Flags().BoolVar(&setup, "setup", false, "Collect project routes before installing cron")
 		case "status":
 			cmd.Flags().BoolVar(&all, "all", false, "Show every recorded issue, including deferred work")
+		case "prune-sessions":
+			cmd.Flags().BoolVar(&apply, "apply", false, "Permanently delete the eligible recorded CLI sessions")
 		}
 		if name == "run" {
 			cmd.Flags().StringVar(&issueFile, "issue-file", "", "Saved issue JSON snapshot")
@@ -263,7 +269,7 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	defer lock.Close()
 	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			if action == "reconcile" || action == "resume" {
+			if action == "reconcile" || action == "resume" || action == "prune-sessions" {
 				return errors.New("worker still active; recovery refused")
 			}
 			fmt.Fprintln(r.out, "Worker already active; skipping this tick")
@@ -300,6 +306,9 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	}
 	if action == "resume" {
 		return r.resume(c, issueFile, runs, db, lock)
+	}
+	if action == "prune-sessions" {
+		return r.pruneSessions(c, runs, db, dryRun)
 	}
 	if action == "poll" && !dryRun {
 		pollPhase = "provider recovery"
