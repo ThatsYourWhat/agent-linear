@@ -35,7 +35,7 @@ func openState(path string) (*sql.DB, error) {
 		db.Close()
 		return nil, err
 	}
-	if version > 2 {
+	if version > 3 {
 		db.Close()
 		return nil, errors.New("state database is newer than this runner")
 	}
@@ -66,6 +66,25 @@ func openState(path string) (*sql.DB, error) {
 		}
 		if _, err = tx.Exec(`CREATE TABLE provider_recoveries (issue_id TEXT PRIMARY KEY, retry_at INTEGER NOT NULL, state TEXT NOT NULL, reason TEXT NOT NULL)`); err == nil {
 			_, err = tx.Exec("PRAGMA user_version=2")
+		}
+		if err != nil {
+			tx.Rollback()
+			db.Close()
+			return nil, err
+		}
+		if err = tx.Commit(); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	if version < 3 {
+		tx, err := db.Begin()
+		if err != nil {
+			db.Close()
+			return nil, err
+		}
+		if _, err = tx.Exec(`CREATE TABLE goals (goal_id TEXT PRIMARY KEY, project_id TEXT NOT NULL, identifier TEXT NOT NULL, prompt TEXT NOT NULL, folder TEXT NOT NULL, status TEXT NOT NULL, created_issues TEXT NOT NULL, plan_fingerprint TEXT NOT NULL)`); err == nil {
+			_, err = tx.Exec("PRAGMA user_version=3")
 		}
 		if err != nil {
 			tx.Rollback()

@@ -21,7 +21,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-//go:embed AGENT.md result.schema.json config.example.json
+//go:embed AGENT.md result.schema.json goal-plan.schema.json config.example.json
 var assets embed.FS
 
 type runner struct {
@@ -232,6 +232,23 @@ func (r *runner) cli() *cobra.Command {
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error { return r.installSkill(args[0]) },
 	})
+	goal := &cobra.Command{Use: "goal", Short: "Turn a prompt into Linear issues via a read-only investigation"}
+	var goalProject, goalPrompt, goalPromptFile string
+	var goalDryRun, goalAutostart bool
+	goal.Flags().StringVar(&goalProject, "project", "", "Configured Linear project UUID")
+	goal.Flags().StringVar(&goalPrompt, "prompt", "", "Goal prompt")
+	goal.Flags().StringVar(&goalPromptFile, "prompt-file", "", "File containing the goal prompt")
+	goal.Flags().BoolVar(&goalDryRun, "dry-run", false, "Investigate and print the plan without creating issues")
+	goal.Flags().BoolVar(&goalAutostart, "autostart", false, "Create issues directly in ready + agent-ready instead of triage")
+	goal.PreRun = func(cmd *cobra.Command, args []string) { r.ctx = cmd.Context() }
+	goal.RunE = func(cmd *cobra.Command, args []string) error {
+		path, err := absPath(configPath)
+		if err != nil {
+			return err
+		}
+		return r.executeGoal(path, goalProject, goalPrompt, goalPromptFile, goalDryRun, goalAutostart)
+	}
+	root.AddCommand(goal)
 	return root
 }
 

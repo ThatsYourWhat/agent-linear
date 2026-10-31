@@ -23,6 +23,7 @@ const projectID = "11111111-1111-4111-8111-111111111111"
 const issueID = "22222222-2222-4222-8222-222222222222"
 const teamID = "33333333-3333-4333-8333-333333333333"
 const readyID = "44444444-4444-4444-8444-444444444444"
+const triageID = "55555555-5555-4555-8555-555555555555"
 const progressID = "66666666-6666-4666-8666-666666666666"
 const reviewID = "77777777-7777-4777-8777-777777777777"
 const doneID = "99999999-9999-4999-8999-999999999999"
@@ -58,6 +59,7 @@ func testConfig(repo string) *config {
 	}
 	rt.TeamID = teamID
 	rt.ReadyStateID = readyID
+	rt.TriageStateID = triageID
 	rt.GitHubRepo = "acme/widget"
 	rt.RepoPath = repo
 	rt.Label = "agent-ready"
@@ -137,6 +139,9 @@ func agentFixture(root, engine string) int {
 	}
 	if string(prompt) == availabilityPrompt {
 		return availabilityFixture(root, engine)
+	}
+	if strings.Contains(string(prompt), "plan work toward this goal") {
+		return goalAgentFixture(root, engine)
 	}
 	if (!strings.Contains(string(prompt), "Reject empty input") && !strings.Contains(string(prompt), "Do not modify any files.")) || os.Getenv("LINEAR_API_KEY") != "" || os.Getenv("GIT_AUTHOR_NAME") != "Test" || os.Getenv("GIT_AUTHOR_EMAIL") != "test@example.com" {
 		return fail("invalid prompt/environment")
@@ -468,15 +473,16 @@ type apiCall struct {
 	Variables map[string]any
 }
 type linearFixture struct {
-	mu         sync.Mutex
-	calls      []apiCall
-	outcome    string
-	issue      map[string]any
-	moreIssues []map[string]any
-	queueReads int
-	liveState  string
-	liveIssue  string
-	viewerID   string
+	mu          sync.Mutex
+	calls       []apiCall
+	outcome     string
+	issue       map[string]any
+	moreIssues  []map[string]any
+	queueReads  int
+	liveState   string
+	liveIssue   string
+	viewerID    string
+	createCount int
 }
 
 func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
@@ -596,6 +602,29 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 			nodes = []any{}
 		}
 		data = map[string]any{"issues": map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false, "endCursor": nil}}}
+	case strings.Contains(call.Query, "issueLabels("):
+		names := []any{}
+		if raw, ok := call.Variables["names"].([]any); ok {
+			names = raw
+		}
+		nodes := []any{}
+		for _, name := range names {
+			nodes = append(nodes, map[string]any{"id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "name": name})
+		}
+		data = map[string]any{"issueLabels": map[string]any{"nodes": nodes}}
+	case strings.Contains(call.Query, "issueCreate("):
+		f.createCount++
+		id := fmt.Sprintf("aaaaaaaa-aaaa-4aaa-8aaa-%012x", f.createCount)
+		identifier := fmt.Sprintf("GOAL-%d", f.createCount)
+		stateID := textAt(call.Variables, "input", "stateId")
+		parentID := textAt(call.Variables, "input", "parentId")
+		issue := map[string]any{"id": id, "identifier": identifier, "title": textAt(call.Variables, "input", "title"), "state": map[string]any{"id": stateID, "name": "Triage"}, "parent": map[string]any{"id": parentID}}
+		if f.outcome == "create-error" {
+			w.WriteHeader(503)
+			fmt.Fprint(w, "test-secret")
+			return
+		}
+		data = map[string]any{"issueCreate": map[string]any{"success": true, "issue": issue}}
 	default:
 		w.WriteHeader(400)
 		return

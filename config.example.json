@@ -9,6 +9,7 @@
     "LINEAR-PROJECT-UUID": {
       "team_id": "LINEAR-TEAM-UUID",
       "ready_state_id": "LINEAR-READY-STATE-UUID",
+      "triage_state_id": "LINEAR-TRIAGE-STATE-UUID",
       "label": "agent-ready",
       "repo_path": "/absolute/path/to/project",
       "github_repo": "OWNER/REPO",

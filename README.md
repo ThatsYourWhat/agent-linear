@@ -68,6 +68,28 @@ PR URL, deployment state, and any blockers. Do not merge.
 The runner supplies this context automatically. Do not paste API keys into it.
 A single session's self-review does not replace independent review on the PR.
 
+## Goals: turning prompts into issues
+
+`goal` turns a natural-language directive into concrete, well-scoped Linear issues.
+A read-only agent investigates the repository, then the runner creates a parent
+**goal** issue with one sub-issue per finding:
+
+```bash
+./agent-linear goal --project PROJECT_UUID --prompt "Diagnose N+1 queries"
+./agent-linear goal --project PROJECT_UUID --prompt-file goals/n1.txt --dry-run
+```
+
+The investigation never commits, pushes, or opens a PR; only the runner writes to
+Linear. Each generated sub-issue carries requirements and acceptance criteria, so
+a human can later move it to the ready state and the normal poll/run engine
+implements it. By default new issues land in the configured **triage** state;
+`--autostart` instead places them directly in ready with the `agent-ready` label so
+the next cron tick picks them up without approval. `--dry-run` prints the plan
+without any Linear writes. Re-running the same prompt for the same project is
+detected and skipped rather than creating duplicate goals.
+
+Routes need a `triage_state_id` in addition to `team_id` and `ready_state_id`.
+
 ## Configure later
 
 Needs Linux, the built `agent-linear` executable, git, an authenticated Codex or

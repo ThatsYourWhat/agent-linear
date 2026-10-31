@@ -41,7 +41,7 @@ func TestSetupAndCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	second := "00000000-0000-4000-8000-000000000000"
-	r.in = strings.NewReader(strings.Join([]string{second, teamID, readyID, source, "-", "n", ""}, "\n"))
+	r.in = strings.NewReader(strings.Join([]string{second, teamID, readyID, triageID, source, "-", "n", ""}, "\n"))
 	if err := executeTest(r, "setup"); err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +72,7 @@ func TestSetupAndCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.in = strings.NewReader(strings.Join([]string{projectID, "invalid", "", "", "", "n", ""}, "\n"))
+	r.in = strings.NewReader(strings.Join([]string{projectID, "invalid", "", "", "", "", "n", ""}, "\n"))
 	if err = executeTest(r, "setup"); err == nil {
 		t.Fatal("invalid setup accepted")
 	}
@@ -96,7 +96,7 @@ func TestConfigurationGates(t *testing.T) {
 	root := t.TempDir()
 	source := testRepo(t, root)
 	r := newRunner(filepath.Join(root, "agent-linear"))
-	for _, variant := range []string{"valid", "engine", "model", "project", "team", "ready", "origin", "base", "unsigned", "mode", "environment", "instructions", "relative-path"} {
+	for _, variant := range []string{"valid", "engine", "model", "project", "team", "ready", "triage", "triage-equal", "origin", "base", "unsigned", "mode", "environment", "instructions", "relative-path"} {
 		t.Run(variant, func(t *testing.T) {
 			c := testConfig(source)
 			rt := c.Projects[projectID]
@@ -113,6 +113,10 @@ func TestConfigurationGates(t *testing.T) {
 				rt.TeamID = "wrong"
 			case "ready":
 				rt.ReadyStateID = "wrong"
+			case "triage":
+				rt.TriageStateID = "wrong"
+			case "triage-equal":
+				rt.TriageStateID = rt.ReadyStateID
 			case "origin":
 				rt.GitHubRepo = "another/repo"
 			case "base":
@@ -222,7 +226,7 @@ func TestCronInstallPreviewUninstall(t *testing.T) {
 	fixtureBinaries(t, root)
 	api := &linearFixture{}
 	r := newFixtureRunner(t, root, source, api)
-	r.in = strings.NewReader(strings.Join([]string{projectID, teamID, readyID, source, "", "n", ""}, "\n"))
+	r.in = strings.NewReader(strings.Join([]string{projectID, teamID, readyID, triageID, source, "", "n", ""}, "\n"))
 	mustWrite(t, filepath.Join(root, "crontab"), "0 0 * * * backup\n*/9 * * * * old # blank-agent-linear\n")
 	var out bytes.Buffer
 	r.out = &out

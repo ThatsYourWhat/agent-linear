@@ -26,6 +26,7 @@ type config struct {
 type route struct {
 	TeamID               string `json:"team_id"`
 	ReadyStateID         string `json:"ready_state_id"`
+	TriageStateID        string `json:"triage_state_id"`
 	Label                string `json:"label,omitempty"`
 	RepoPath             string `json:"repo_path"`
 	GitHubRepo           string `json:"github_repo"`
@@ -188,8 +189,11 @@ func (r *runner) validateConfig(c *config) error {
 		return errors.New("configure at least one project route")
 	}
 	for id, rt := range c.Projects {
-		if rt == nil || !uuidRE.MatchString(id) || !uuidRE.MatchString(rt.TeamID) || !uuidRE.MatchString(rt.ReadyStateID) {
-			return errors.New("project/team/ready-state IDs must be UUIDs")
+		if rt == nil || !uuidRE.MatchString(id) || !uuidRE.MatchString(rt.TeamID) || !uuidRE.MatchString(rt.ReadyStateID) || !uuidRE.MatchString(rt.TriageStateID) {
+			return errors.New("project/team/ready-state/triage-state IDs must be UUIDs")
+		}
+		if rt.TriageStateID == rt.ReadyStateID {
+			return errors.New("triage_state_id must differ from ready_state_id")
 		}
 		if rt.BaseBranch != "staging" {
 			return errors.New("all feature PRs must target staging")
@@ -294,7 +298,7 @@ func (r *runner) configureProjects(path string) error {
 		for k, v := range previous {
 			rt[k] = v
 		}
-		for _, field := range []struct{ key, label string }{{"team_id", "Linear team UUID"}, {"ready_state_id", "Ready status UUID"}, {"repo_path", "Local repository path"}} {
+		for _, field := range []struct{ key, label string }{{"team_id", "Linear team UUID"}, {"ready_state_id", "Ready status UUID"}, {"triage_state_id", "Triage status UUID"}, {"repo_path", "Local repository path"}} {
 			def := textAt(previous, field.key)
 			value, e := prompt(reader, r.out, fmt.Sprintf("%s [%s]: ", field.label, def))
 			if e != nil {

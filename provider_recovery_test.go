@@ -152,9 +152,11 @@ func TestAutomaticProviderRecoveryStopsAtUnsafeBoundaries(t *testing.T) {
 						t.Fatal(err)
 					}
 					defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-				case "preflight-auth", "preflight-invalid", "preflight-timeout", "process-error", "ci-pending":
+				case "preflight-auth", "preflight-invalid", "preflight-timeout":
 					mustWrite(t, filepath.Join(root, "outcome"), scenario)
 					r.preflightTimeout = time.Second
+				case "process-error", "ci-pending":
+					mustWrite(t, filepath.Join(root, "outcome"), scenario)
 				case "ambiguous-crash":
 					if err := stopProviderRecovery(db, issueID, "Interrupted automatic attempt; inspect manually"); err != nil {
 						t.Fatal(err)
@@ -218,7 +220,7 @@ func TestProviderRecoveryMigrationPreservesManualRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, query := range []string{"DROP TABLE provider_recoveries", "PRAGMA user_version=1", "INSERT INTO runs VALUES ('legacy','APP-1','blocked','/old/checkout','')"} {
+	for _, query := range []string{"DROP TABLE provider_recoveries", "DROP TABLE goals", "PRAGMA user_version=1", "INSERT INTO runs VALUES ('legacy','APP-1','blocked','/old/checkout','')"} {
 		if _, err = db.Exec(query); err != nil {
 			t.Fatal(err)
 		}
@@ -234,7 +236,7 @@ func TestProviderRecoveryMigrationPreservesManualRuns(t *testing.T) {
 	}
 	defer db.Close()
 	var count, version int
-	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 2 {
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 3 {
 		t.Fatal(version, err)
 	}
 	if err = db.QueryRow("SELECT COUNT(*) FROM provider_recoveries").Scan(&count); err != nil || count != 0 {
