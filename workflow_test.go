@@ -140,8 +140,8 @@ func agentFixture(root, engine string) int {
 	if string(prompt) == availabilityPrompt {
 		return availabilityFixture(root, engine)
 	}
-	if strings.Contains(string(prompt), "plan work toward this goal") {
-		return goalAgentFixture(root, engine)
+	if strings.Contains(string(prompt), "plan work toward this goal") || strings.Contains(string(prompt), "incorporate stakeholder feedback") {
+		return goalAgentFixture(root, engine, string(prompt))
 	}
 	if (!strings.Contains(string(prompt), "Reject empty input") && !strings.Contains(string(prompt), "Do not modify any files.")) || os.Getenv("LINEAR_API_KEY") != "" || os.Getenv("GIT_AUTHOR_NAME") != "Test" || os.Getenv("GIT_AUTHOR_EMAIL") != "test@example.com" {
 		return fail("invalid prompt/environment")
@@ -483,6 +483,8 @@ type linearFixture struct {
 	liveIssue   string
 	viewerID    string
 	createCount int
+	children    []map[string]any
+	comments    map[string][]map[string]any
 }
 
 func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
@@ -580,6 +582,19 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		data = map[string]any{"commentCreate": map[string]any{"success": true, "comment": map[string]any{"id": issueID}}}
+	case strings.Contains(call.Query, "GoalComments"):
+		id := textAt(call.Variables, "id")
+		comments := f.comments[id]
+		data = map[string]any{"issue": map[string]any{"comments": map[string]any{"nodes": comments}}}
+	case strings.Contains(call.Query, "GoalChildren"):
+		parent := textAt(call.Variables, "filter", "parent", "id", "eq")
+		nodes := []any{}
+		for _, child := range f.children {
+			if textAt(child, "parent", "id") == parent {
+				nodes = append(nodes, child)
+			}
+		}
+		data = map[string]any{"issues": map[string]any{"nodes": nodes}}
 	case strings.Contains(call.Query, "issues("):
 		f.queueReads++
 		nodes := []any{f.issue}
@@ -619,6 +634,7 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 		stateID := textAt(call.Variables, "input", "stateId")
 		parentID := textAt(call.Variables, "input", "parentId")
 		issue := map[string]any{"id": id, "identifier": identifier, "title": textAt(call.Variables, "input", "title"), "state": map[string]any{"id": stateID, "name": "Triage"}, "parent": map[string]any{"id": parentID}}
+		f.children = append(f.children, issue)
 		if f.outcome == "create-error" {
 			w.WriteHeader(503)
 			fmt.Fprint(w, "test-secret")

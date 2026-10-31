@@ -249,6 +249,20 @@ func (r *runner) cli() *cobra.Command {
 		return r.executeGoal(path, goalProject, goalPrompt, goalPromptFile, goalDryRun, goalAutostart)
 	}
 	root.AddCommand(goal)
+	review := &cobra.Command{Use: "review", Short: "Read feedback on a goal and create follow-ups or refine triage issues"}
+	var reviewGoal string
+	var reviewDryRun bool
+	review.Flags().StringVar(&reviewGoal, "goal", "", "Recorded goal Linear UUID")
+	review.Flags().BoolVar(&reviewDryRun, "dry-run", false, "Read feedback and print the revised plan without applying it")
+	review.PreRun = func(cmd *cobra.Command, args []string) { r.ctx = cmd.Context() }
+	review.RunE = func(cmd *cobra.Command, args []string) error {
+		path, err := absPath(configPath)
+		if err != nil {
+			return err
+		}
+		return r.executeGoalReview(path, reviewGoal, reviewDryRun)
+	}
+	goal.AddCommand(review)
 	return root
 }
 

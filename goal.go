@@ -48,14 +48,22 @@ func validateGoalPlan(plan map[string]any) error {
 	if err := validateReport(plan, schema, "goal"); err != nil {
 		return err
 	}
-	issues, _ := plan["issues"].([]any)
-	if len(issues) == 0 {
-		return errors.New("goal plan must include at least one issue")
-	}
-	for i, item := range issues {
+	for i, item := range planIssues(plan) {
 		issue, _ := item.(map[string]any)
 		if strings.TrimSpace(textAt(issue, "title")) == "" || strings.TrimSpace(textAt(issue, "description")) == "" {
 			return fmt.Errorf("goal plan issue %d needs a title and description", i+1)
+		}
+	}
+	for i, item := range planRefinements(plan) {
+		refinement, _ := item.(map[string]any)
+		if strings.TrimSpace(textAt(refinement, "issue")) == "" || strings.TrimSpace(textAt(refinement, "title")) == "" && strings.TrimSpace(textAt(refinement, "description")) == "" {
+			return fmt.Errorf("goal plan refinement %d needs an issue and a title or description", i+1)
+		}
+	}
+	for i, item := range planFlags(plan) {
+		flag, _ := item.(map[string]any)
+		if strings.TrimSpace(textAt(flag, "issue")) == "" || strings.TrimSpace(textAt(flag, "reason")) == "" {
+			return fmt.Errorf("goal plan flag %d needs an issue and a reason", i+1)
 		}
 	}
 	return nil
@@ -79,6 +87,16 @@ func readGoalPlan(folder string) (map[string]any, error) {
 func planIssues(plan map[string]any) []any {
 	issues, _ := plan["issues"].([]any)
 	return issues
+}
+
+func planRefinements(plan map[string]any) []any {
+	refinements, _ := plan["refinements"].([]any)
+	return refinements
+}
+
+func planFlags(plan map[string]any) []any {
+	flags, _ := plan["flags"].([]any)
+	return flags
 }
 
 func planLabels(issue any) []string {
@@ -190,7 +208,7 @@ func saveGoal(db *sql.DB, g goalRecord) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec("INSERT INTO goals VALUES (?,?,?,?,?,?,?,?)", g.GoalID, g.ProjectID, g.Identifier, g.Prompt, g.Folder, g.Status, string(created), g.Fingerprint)
+	_, err = db.Exec(`INSERT INTO goals VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(goal_id) DO UPDATE SET created_issues=excluded.created_issues`, g.GoalID, g.ProjectID, g.Identifier, g.Prompt, g.Folder, g.Status, string(created), g.Fingerprint)
 	return err
 }
 
@@ -251,6 +269,66 @@ func (r *runner) labelIDs(names []string) (map[string]string, error) {
 		result[node.Name] = node.ID
 	}
 	return result, nil
+}
+
+// issueComments returns the comment thread for one issue.
+func (r *runner) issueComments(id string) ([]map[string]any, error) {
+	var data struct {
+		Issue struct {
+			Comments struct {
+				Nodes []map[string]any `json:"nodes"`
+			} `json:"comments"`
+		} `json:"issue"`
+	}
+	if err := r.graphql(`query GoalComments($id: String!) { issue(id: $id) { comments { nodes { id body user { id name } createdAt } } } }`, map[string]any{"id": id}, &data); err != nil {
+		return nil, err
+	}
+	return data.Issue.Comments.Nodes, nil
+}
+
+// childIssues returns the sub-issues of a parent goal.
+func (r *runner) childIssues(parentID string) ([]map[string]any, error) {
+	var data struct {
+		Issues *struct {
+			Nodes []map[string]any `json:"nodes"`
+		} `json:"issues"`
+	}
+	filter := map[string]any{"parent": map[string]any{"id": map[string]any{"eq": parentID}}}
+	if err := r.graphql(`query GoalChildren($filter: IssueFilter!) { issues(first: 50, filter: $filter) { nodes { `+issueFields+` } } }`, map[string]any{"filter": filter}, &data); err != nil {
+		return nil, err
+	}
+	if data.Issues == nil {
+		return nil, errors.New("Linear returned no child issues")
+	}
+	return data.Issues.Nodes, nil
+}
+
+// refineIssue edits an existing issue's title/description in place.
+func (r *runner) refineIssue(id, title, description, folder, stage string) error {
+	input := map[string]any{}
+	if strings.TrimSpace(title) != "" {
+		input["title"] = title
+	}
+	if strings.TrimSpace(description) != "" {
+		input["description"] = description
+	}
+	if len(input) == 0 {
+		return nil
+	}
+	variables := map[string]any{"id": id, "input": input}
+	if err := writeJSON(filepath.Join(folder, stage+"-refine-request.json"), variables); err != nil {
+		return err
+	}
+	var data struct {
+		Update map[string]any `json:"issueUpdate"`
+	}
+	if err := r.graphql(`mutation GoalRefine($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success issue { id title description state { id } } } }`, variables, &data); err != nil {
+		return err
+	}
+	if !boolAt(data.Update, "success") || textAt(data.Update, "issue", "id") != id {
+		return errors.New("Linear issue refinement was not confirmed")
+	}
+	return writeJSON(filepath.Join(folder, stage+"-refine.json"), data.Update)
 }
 
 // launchGoalAgent runs a read-only investigation and returns the validated plan.
@@ -366,6 +444,9 @@ func (r *runner) runGoal(c *config, project, promptText string, dryRun, autostar
 	if err = writeJSON(filepath.Join(folder, "goal-plan.json"), plan); err != nil {
 		return err
 	}
+	if len(planIssues(plan)) == 0 {
+		return errors.New("goal plan must include at least one issue")
+	}
 	if dryRun {
 		printGoalPlan(r.out, plan)
 		fmt.Fprintln(r.out, "Dry run: no issues were created")
@@ -469,4 +550,220 @@ func (r *runner) executeGoal(configPath, project, promptText, promptFile string,
 		return err
 	}
 	return r.runGoal(c, project, promptText, dryRun, autostart, runs, db, lock)
+}
+
+func reviewPrompt(goal string, feedback, children []map[string]any) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "You are reviewing a goal and its issues to incorporate stakeholder feedback. Do not modify any files or create commits; this is read-only analysis.\n\nGoal: %s\n\nCurrent issues:\n", goal)
+	for _, child := range children {
+		fmt.Fprintf(&b, "- %s [%s]: %s\n", textAt(child, "identifier"), textAt(child, "state", "name"), textAt(child, "title"))
+	}
+	if len(feedback) > 0 {
+		b.WriteString("\nStakeholder feedback:\n")
+		for _, comment := range feedback {
+			fmt.Fprintf(&b, "- %s: %s\n", textAt(comment, "user", "name"), textAt(comment, "body"))
+		}
+	} else {
+		b.WriteString("\nNo new stakeholder feedback.\n")
+	}
+	b.WriteString("\nProduce a plan with:\n- issues: new follow-up issues to create, each with a title and a description stating requirements and acceptance criteria.\n- refinements: edits to EXISTING issues (referenced by identifier), only when they are still in triage; give the new title and/or description.\n- flags: stale, duplicate or superseded issues to flag for a human to close.\n\nReturn only JSON matching this schema, with no markdown fences:\n")
+	b.WriteString(asset("goal-plan.schema.json"))
+	b.WriteString("\n")
+	return b.String()
+}
+
+func reviewSummaryBody(refined, flagged []string, created []goalIssue) string {
+	var b strings.Builder
+	b.WriteString("Reviewed goal with stakeholder feedback.\n")
+	if len(created) > 0 {
+		b.WriteString("\nCreated follow-ups:\n")
+		for _, item := range created {
+			fmt.Fprintf(&b, "- %s\n", item.Identifier)
+		}
+	}
+	if len(refined) > 0 {
+		b.WriteString("\nRefined in place (triage):\n")
+		for _, identifier := range refined {
+			fmt.Fprintf(&b, "- %s\n", identifier)
+		}
+	}
+	if len(flagged) > 0 {
+		b.WriteString("\nFlagged for human review (not closed):\n")
+		for _, flag := range flagged {
+			fmt.Fprintf(&b, "- %s\n", flag)
+		}
+	}
+	return b.String()
+}
+
+// reviewGoal reads stakeholder feedback on a goal and its children, then applies
+// follow-ups (new issues), in-place refinements (triage only) and flags (never closed).
+func (r *runner) reviewGoal(c *config, goalID string, dryRun bool, db *sql.DB, lock *os.File) error {
+	if !uuidRE.MatchString(goalID) {
+		return errors.New("review requires --goal with a recorded goal UUID")
+	}
+	record, err := loadGoal(db, goalID)
+	if err != nil {
+		return err
+	}
+	rt := c.Projects[record.ProjectID]
+	if rt == nil {
+		return errors.New("recorded goal project is not configured")
+	}
+	viewer, err := r.viewer()
+	if err != nil {
+		return err
+	}
+	goalComments, err := r.issueComments(goalID)
+	if err != nil {
+		return err
+	}
+	children, err := r.childIssues(goalID)
+	if err != nil {
+		return err
+	}
+	// Keep only team feedback; drop the runner's own bookkeeping comments.
+	var feedback []map[string]any
+	for _, comment := range goalComments {
+		if textAt(comment, "user", "id") != viewer {
+			feedback = append(feedback, comment)
+		}
+	}
+	for _, child := range children {
+		comments, err := r.issueComments(textAt(child, "id"))
+		if err != nil {
+			return err
+		}
+		for _, comment := range comments {
+			if textAt(comment, "user", "id") != viewer {
+				feedback = append(feedback, comment)
+			}
+		}
+	}
+	if err = writeJSON(filepath.Join(record.Folder, "goal-feedback.json"), map[string]any{"goal": goalID, "children": children, "comments": feedback}); err != nil {
+		return err
+	}
+	plan, err := r.launchGoalAgent(c, filepath.Join(record.Folder, "repo"), record.Folder, reviewPrompt(record.Prompt, feedback, children), lock)
+	if err != nil {
+		return err
+	}
+	if err = writeJSON(filepath.Join(record.Folder, "goal-review-plan.json"), plan); err != nil {
+		return err
+	}
+	if dryRun {
+		printGoalPlan(r.out, plan)
+		fmt.Fprintln(r.out, "Dry run: no follow-ups or refinements were applied")
+		return nil
+	}
+	if len(planIssues(plan)) == 0 && len(planRefinements(plan)) == 0 && len(planFlags(plan)) == 0 {
+		return errors.New("review plan must propose at least one action")
+	}
+	byIdentifier := map[string]map[string]any{}
+	for _, child := range children {
+		if identifier := textAt(child, "identifier"); identifier != "" {
+			byIdentifier[identifier] = child
+		}
+	}
+	labelNames := []string{}
+	for _, item := range planIssues(plan) {
+		labelNames = append(labelNames, planLabels(item)...)
+	}
+	labels, err := r.labelIDs(uniqueStrings(labelNames))
+	if err != nil {
+		return err
+	}
+	var created []goalIssue
+	var refined, flagged []string
+	for i, item := range planIssues(plan) {
+		input := map[string]any{"teamId": rt.TeamID, "title": textAt(item, "title"), "description": textAt(item, "description"), "stateId": rt.TriageStateID, "parentId": goalID}
+		if p := linearPriority(textAt(item, "priority")); p != 0 {
+			input["priority"] = p
+		}
+		var issueLabelIDs []string
+		for _, name := range planLabels(item) {
+			if id := labels[name]; id != "" {
+				issueLabelIDs = append(issueLabelIDs, id)
+			}
+		}
+		if len(issueLabelIDs) > 0 {
+			input["labelIds"] = uniqueStrings(issueLabelIDs)
+		}
+		child, err := r.createIssue(input, record.Folder, fmt.Sprintf("followup-%d", i+1))
+		if err != nil {
+			return err
+		}
+		created = append(created, goalIssue{ID: textAt(child, "id"), Identifier: textAt(child, "identifier")})
+	}
+	for i, item := range planRefinements(plan) {
+		identifier := textAt(item, "issue")
+		child := byIdentifier[identifier]
+		if child == nil {
+			flagged = append(flagged, identifier+" (not found)")
+			continue
+		}
+		if textAt(child, "state", "id") == rt.TriageStateID {
+			if err = r.refineIssue(textAt(child, "id"), textAt(item, "title"), textAt(item, "description"), record.Folder, fmt.Sprintf("refine-%d", i+1)); err != nil {
+				return err
+			}
+			refined = append(refined, identifier)
+		} else {
+			// Started/completed work has frozen requirements: express the refinement as a follow-up.
+			title := textAt(item, "title")
+			if title == "" {
+				title = "Refine " + identifier
+			}
+			description := textAt(item, "description")
+			if description == "" {
+				description = "Refine " + identifier + " per stakeholder feedback."
+			} else {
+				description = "Refines " + identifier + " (already started): " + description
+			}
+			child, err := r.createIssue(map[string]any{"teamId": rt.TeamID, "title": title, "description": description, "stateId": rt.TriageStateID, "parentId": goalID}, record.Folder, fmt.Sprintf("refine-followup-%d", i+1))
+			if err != nil {
+				return err
+			}
+			created = append(created, goalIssue{ID: textAt(child, "id"), Identifier: textAt(child, "identifier")})
+		}
+	}
+	for _, item := range planFlags(plan) {
+		flagged = append(flagged, fmt.Sprintf("%s: %s", textAt(item, "issue"), textAt(item, "reason")))
+	}
+	record.Created = append(record.Created, created...)
+	if err = saveGoal(db, record); err != nil {
+		return err
+	}
+	if err = r.postComment(goalID, reviewSummaryBody(refined, flagged, created), record.Folder, "review"); err != nil {
+		fmt.Fprintln(r.errOut, "Review applied; inspect review comment delivery evidence")
+	}
+	printGoalPlan(r.out, plan)
+	fmt.Fprintf(r.out, "%s: reviewed; %d follow-up(s), %d refined, %d flagged\n", record.Identifier, len(created), len(refined), len(flagged))
+	return nil
+}
+
+func (r *runner) executeGoalReview(configPath, goalID string, dryRun bool) error {
+	runs := filepath.Join(r.root, ".runs")
+	if err := os.MkdirAll(runs, 0700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(runs, "worker.lock"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return errors.New("worker still active; review refused")
+		}
+		return err
+	}
+	db, err := openState(filepath.Join(runs, "state.sqlite3"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	c, err := r.loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	return r.reviewGoal(c, goalID, dryRun, db, lock)
 }

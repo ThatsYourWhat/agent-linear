@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -21,7 +22,23 @@ func goalTestPlan() map[string]any {
 	}
 }
 
-func goalAgentFixture(root, engine string) int {
+func reviewTestPlan() map[string]any {
+	return map[string]any{
+		"findings": []any{},
+		"issues": []any{
+			map[string]any{"title": "Add rate limiting", "description": "Limit requests per window.\n\nAcceptance: 429 when exceeded.", "priority": "medium", "labels": []any{}},
+		},
+		"refinements": []any{
+			map[string]any{"issue": "APP-1", "title": "", "description": "Scope down to reads only."},
+		},
+		"flags": []any{
+			map[string]any{"issue": "APP-2", "reason": "superseded"},
+		},
+		"follow_up_questions": []any{},
+	}
+}
+
+func goalAgentFixture(root, engine, prompt string) int {
 	fail := func(v any) int { fmt.Fprintln(os.Stderr, v); return 1 }
 	repo, err := os.Getwd()
 	if err != nil {
@@ -37,6 +54,9 @@ func goalAgentFixture(root, engine string) int {
 	if err = writeJSON(filepath.Join(folder, "goal-args.json"), os.Args); err != nil {
 		return fail(err)
 	}
+	if err = writeFile(filepath.Join(folder, "goal-prompt.txt"), []byte(prompt)); err != nil {
+		return fail(err)
+	}
 	if engine == "codex" && !slices.Contains(os.Args, "read-only") {
 		return fail("missing read-only sandbox")
 	}
@@ -44,13 +64,21 @@ func goalAgentFixture(root, engine string) int {
 	if err != nil {
 		return fail(err)
 	}
+	review := strings.Contains(prompt, "incorporate stakeholder feedback")
 	plan := goalTestPlan()
+	if review {
+		plan = reviewTestPlan()
+	}
 	var data []byte
 	switch string(outcomeBytes) {
 	case "malformed":
 		data = []byte("not JSON")
 	case "empty-plan":
 		plan["issues"] = []any{}
+		if review {
+			plan["refinements"] = []any{}
+			plan["flags"] = []any{}
+		}
 		data, _ = json.Marshal(plan)
 	case "invalid-plan":
 		delete(plan, "issues")
@@ -273,5 +301,162 @@ func TestGoalPlanValidation(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+const reviewGoalID = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+const reviewChild1ID = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+const reviewChild2ID = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+
+func setupGoalReview(t *testing.T, root, source, engine string) (*runner, *linearFixture, *sql.DB) {
+	t.Helper()
+	fixtureBinaries(t, root)
+	api := &linearFixture{issue: testIssue()}
+	r := newFixtureRunner(t, root, source, api)
+	writeGoalConfig(t, root, source, engine)
+	goalFolder := filepath.Join(root, ".runs", reviewGoalID)
+	if err := os.MkdirAll(filepath.Join(goalFolder, "repo"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	db, err := openState(filepath.Join(root, ".runs", "state.sqlite3"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := goalRecord{
+		GoalID:      reviewGoalID,
+		ProjectID:   projectID,
+		Identifier:  "GOAL-1",
+		Prompt:      "Diagnose N+1 queries",
+		Folder:      goalFolder,
+		Status:      "ready",
+		Created:     []goalIssue{{ID: reviewChild1ID, Identifier: "APP-1"}, {ID: reviewChild2ID, Identifier: "APP-2"}},
+		Fingerprint: goalFingerprint(projectID, "Diagnose N+1 queries"),
+	}
+	if err = saveGoal(db, record); err != nil {
+		t.Fatal(err)
+	}
+	api.children = []map[string]any{
+		{"id": reviewChild1ID, "identifier": "APP-1", "title": "Fix N+1 queries", "state": map[string]any{"id": triageID, "name": "Triage"}, "parent": map[string]any{"id": reviewGoalID}},
+		{"id": reviewChild2ID, "identifier": "APP-2", "title": "Add caching", "state": map[string]any{"id": progressID, "name": "In Progress"}, "parent": map[string]any{"id": reviewGoalID}},
+	}
+	api.comments = map[string][]map[string]any{
+		reviewGoalID: {
+			{"id": "c1", "body": "Run claimed on test", "user": map[string]any{"id": userID, "name": "Bot"}},
+			{"id": "c2", "body": "also handle writes", "user": map[string]any{"id": "alice", "name": "Alice"}},
+		},
+		reviewChild1ID: {
+			{"id": "c3", "body": "scope this down", "user": map[string]any{"id": "bob", "name": "Bob"}},
+		},
+	}
+	return r, api, db
+}
+
+func TestGoalReviewDryRun(t *testing.T) {
+	for _, engine := range []string{"codex", "opencode"} {
+		t.Run(engine, func(t *testing.T) {
+			root := t.TempDir()
+			source := testRepo(t, root)
+			r, api, db := setupGoalReview(t, root, source, engine)
+			defer db.Close()
+			mustWrite(t, filepath.Join(root, "outcome"), "ready")
+			var out bytes.Buffer
+			r.out = &out
+			if err := executeTest(r, "goal", "review", "--goal", reviewGoalID, "--dry-run"); err != nil {
+				t.Fatal(err)
+			}
+			api.mu.Lock()
+			for _, call := range api.calls {
+				if strings.Contains(call.Query, "issueCreate(") || strings.Contains(call.Query, "issueUpdate(") {
+					api.mu.Unlock()
+					t.Fatal("review dry run mutated Linear")
+				}
+			}
+			api.mu.Unlock()
+			if !strings.Contains(out.String(), "Dry run") {
+				t.Fatal("dry run did not report", out.String())
+			}
+		})
+	}
+}
+
+func TestGoalReviewApplies(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, api, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	mustWrite(t, filepath.Join(root, "outcome"), "ready")
+	if err := executeTest(r, "goal", "review", "--goal", reviewGoalID); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	var creates, updates int
+	var followupParent, followupState, refineID, refineDesc, commentBody string
+	for _, call := range api.calls {
+		if strings.Contains(call.Query, "issueCreate(") {
+			creates++
+			followupParent = textAt(call.Variables, "input", "parentId")
+			followupState = textAt(call.Variables, "input", "stateId")
+		}
+		if strings.Contains(call.Query, "issueUpdate(") {
+			updates++
+			refineID = textAt(call.Variables, "id")
+			refineDesc = textAt(call.Variables, "input", "description")
+		}
+		if strings.Contains(call.Query, "commentCreate(") {
+			commentBody = textAt(call.Variables, "input", "body")
+		}
+	}
+	api.mu.Unlock()
+	if creates != 1 || updates != 1 {
+		t.Fatalf("expected 1 follow-up + 1 refinement, got %d/%d", creates, updates)
+	}
+	if followupParent != reviewGoalID || followupState != triageID {
+		t.Fatal("follow-up must be a triage child of the goal", followupParent, followupState)
+	}
+	if refineID != reviewChild1ID || !strings.Contains(refineDesc, "Scope down") {
+		t.Fatal("triage child not refined in place", refineID, refineDesc)
+	}
+	if !strings.Contains(commentBody, "APP-2") || !strings.Contains(commentBody, "Flagged") {
+		t.Fatal("stale issue not flagged in the review comment", commentBody)
+	}
+	promptBytes, err := os.ReadFile(filepath.Join(root, ".runs", reviewGoalID, "goal-prompt.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(promptBytes)
+	if strings.Contains(prompt, "Run claimed") {
+		t.Fatal("bot comment leaked into the review prompt")
+	}
+	if !strings.Contains(prompt, "also handle writes") || !strings.Contains(prompt, "scope this down") {
+		t.Fatal("human feedback missing from the review prompt", prompt)
+	}
+}
+
+func TestGoalReviewUnknownGoal(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, _, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	mustWrite(t, filepath.Join(root, "outcome"), "ready")
+	if err := executeTest(r, "goal", "review", "--goal", projectID); err == nil {
+		t.Fatal("unknown goal accepted")
+	}
+}
+
+func TestGoalReviewRequiresAction(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, api, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	mustWrite(t, filepath.Join(root, "outcome"), "empty-plan")
+	if err := executeTest(r, "goal", "review", "--goal", reviewGoalID); err == nil {
+		t.Fatal("empty review plan accepted")
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	for _, call := range api.calls {
+		if strings.Contains(call.Query, "issueCreate(") {
+			t.Fatal("empty review plan created issues")
+		}
 	}
 }

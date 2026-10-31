@@ -28,6 +28,29 @@
         }
       }
     },
+    "refinements": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["issue"],
+        "properties": {
+          "issue": {"type": "string"},
+          "title": {"type": "string"},
+          "description": {"type": "string"}
+        }
+      }
+    },
+    "flags": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["issue", "reason"],
+        "properties": {
+          "issue": {"type": "string"},
+          "reason": {"type": "string"}
+        }
+      }
+    },
     "follow_up_questions": {"type": "array", "items": {"type": "string"}}
   }
 }

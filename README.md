@@ -88,6 +88,31 @@ the next cron tick picks them up without approval. `--dry-run` prints the plan
 without any Linear writes. Re-running the same prompt for the same project is
 detected and skipped rather than creating duplicate goals.
 
+### Feedback loop
+
+`goal review` reads a goal, its sub-issues, and their comments, then turns team
+feedback into concrete action:
+
+```bash
+./agent-linear goal review --goal GOAL_UUID
+./agent-linear goal review --goal GOAL_UUID --dry-run
+```
+
+A read-only agent re-examines the goal and produces three kinds of change, all
+applied by the runner:
+
+- **new issues** — genuinely new work from feedback, created in triage under the
+  goal;
+- **refinements** — edits to existing sub-issues still in **triage**, updated in
+  place; a refinement against an issue that has already started becomes a
+  follow-up instead, because its requirements are frozen;
+- **flags** — stale, duplicate or superseded issues, listed in the review comment
+  for a human to close; the runner never closes them itself.
+
+Comments authored by the runner (claim/finish/summary bookkeeping) are ignored;
+only team comments drive the review. `--dry-run` prints the revised plan without
+any Linear writes.
+
 Routes need a `triage_state_id` in addition to `team_id` and `ready_state_id`.
 
 ## Configure later
