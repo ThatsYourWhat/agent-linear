@@ -236,7 +236,7 @@ func TestProviderRecoveryMigrationPreservesManualRuns(t *testing.T) {
 	}
 	defer db.Close()
 	var count, version int
-	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 3 {
+	if err = db.QueryRow("PRAGMA user_version").Scan(&version); err != nil || version != 4 {
 		t.Fatal(version, err)
 	}
 	if err = db.QueryRow("SELECT COUNT(*) FROM provider_recoveries").Scan(&count); err != nil || count != 0 {

@@ -113,6 +113,20 @@ Comments authored by the runner (claim/finish/summary bookkeeping) are ignored;
 only team comments drive the review. `--dry-run` prints the revised plan without
 any Linear writes.
 
+Review every goal that has new feedback since its last review:
+
+```bash
+./agent-linear goal review --all
+./agent-linear goal review --all --dry-run
+```
+
+The sweep is idempotent: each goal records a high-water mark of the newest comment
+already acted on, and `--all` only reviews goals with feedback newer than that
+mark. It reuses the same 15-minute provider cooldown as `poll`, so a rate limit
+pauses the sweep. The scheduled `poll` job also runs this sweep after processing
+the issue queue, so goals with new feedback are reviewed automatically on the
+next tick; goal *creation* remains manual.
+
 Routes need a `triage_state_id` in addition to `team_id` and `ready_state_id`.
 
 ## Configure later

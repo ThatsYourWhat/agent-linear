@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 func goalTestPlan() map[string]any {
@@ -341,11 +342,11 @@ func setupGoalReview(t *testing.T, root, source, engine string) (*runner, *linea
 	}
 	api.comments = map[string][]map[string]any{
 		reviewGoalID: {
-			{"id": "c1", "body": "Run claimed on test", "user": map[string]any{"id": userID, "name": "Bot"}},
-			{"id": "c2", "body": "also handle writes", "user": map[string]any{"id": "alice", "name": "Alice"}},
+			{"id": "c1", "body": "Run claimed on test", "user": map[string]any{"id": userID, "name": "Bot"}, "createdAt": "2026-10-31T10:00:00Z"},
+			{"id": "c2", "body": "also handle writes", "user": map[string]any{"id": "alice", "name": "Alice"}, "createdAt": "2026-10-31T10:05:00Z"},
 		},
 		reviewChild1ID: {
-			{"id": "c3", "body": "scope this down", "user": map[string]any{"id": "bob", "name": "Bob"}},
+			{"id": "c3", "body": "scope this down", "user": map[string]any{"id": "bob", "name": "Bob"}, "createdAt": "2026-10-31T10:10:00Z"},
 		},
 	}
 	return r, api, db
@@ -443,20 +444,106 @@ func TestGoalReviewUnknownGoal(t *testing.T) {
 	}
 }
 
-func TestGoalReviewRequiresAction(t *testing.T) {
+func TestGoalReviewEmptyPlanIsNoop(t *testing.T) {
 	root := t.TempDir()
 	source := testRepo(t, root)
 	r, api, db := setupGoalReview(t, root, source, "codex")
 	defer db.Close()
 	mustWrite(t, filepath.Join(root, "outcome"), "empty-plan")
-	if err := executeTest(r, "goal", "review", "--goal", reviewGoalID); err == nil {
-		t.Fatal("empty review plan accepted")
+	if err := executeTest(r, "goal", "review", "--goal", reviewGoalID); err != nil {
+		t.Fatal("empty review plan should be a no-op", err)
 	}
 	api.mu.Lock()
 	defer api.mu.Unlock()
 	for _, call := range api.calls {
-		if strings.Contains(call.Query, "issueCreate(") {
-			t.Fatal("empty review plan created issues")
+		if strings.Contains(call.Query, "issueCreate(") || strings.Contains(call.Query, "issueUpdate(") {
+			t.Fatal("empty review plan mutated Linear")
 		}
+	}
+}
+
+func TestGoalReviewAllSweepsNewFeedback(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, api, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	mustWrite(t, filepath.Join(root, "outcome"), "ready")
+	if err := executeTest(r, "goal", "review", "--all"); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	creates := countIssueCreates(api.calls)
+	updates := 0
+	for _, call := range api.calls {
+		if strings.Contains(call.Query, "issueUpdate(") {
+			updates++
+		}
+	}
+	api.mu.Unlock()
+	if creates != 1 || updates != 1 {
+		t.Fatalf("sweep expected 1 follow-up + 1 refinement, got %d/%d", creates, updates)
+	}
+	// The high-water mark advanced, so a second sweep must skip entirely.
+	if err := executeTest(r, "goal", "review", "--all"); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	updatesAfter := 0
+	for _, call := range api.calls {
+		if strings.Contains(call.Query, "issueUpdate(") {
+			updatesAfter++
+		}
+	}
+	if countIssueCreates(api.calls) != creates || updatesAfter != updates {
+		t.Fatal("repeated sweep duplicated actions")
+	}
+}
+
+func TestGoalReviewAllSkipsStale(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, api, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	if _, err := db.Exec("UPDATE goals SET last_reviewed_at=?", time.Now().Add(time.Hour).Unix()); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, "outcome"), "ready")
+	if err := executeTest(r, "goal", "review", "--all"); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	for _, call := range api.calls {
+		if strings.Contains(call.Query, "issueCreate(") || strings.Contains(call.Query, "issueUpdate(") || strings.Contains(call.Query, "commentCreate(") {
+			api.mu.Unlock()
+			t.Fatal("stale goal was mutated")
+		}
+	}
+	api.mu.Unlock()
+	if exists(filepath.Join(root, ".runs", reviewGoalID, "goal-review-plan.json")) {
+		t.Fatal("stale goal launched the review agent")
+	}
+}
+
+func TestGoalReviewAllCooldown(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, api, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	c := testConfig(source)
+	c.Engine = "codex"
+	model := "test/model"
+	c.Model = &model
+	if err := saveCooldown(db, c, &providerLimit{RetryAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, "outcome"), "ready")
+	if err := executeTest(r, "goal", "review", "--all"); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.calls) != 0 {
+		t.Fatal("cooldown must skip the sweep before any Linear call", api.calls)
 	}
 }

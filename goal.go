@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 )
 
 // goalIssue records a Linear issue created for a goal.
@@ -25,14 +26,15 @@ type goalIssue struct {
 
 // goalRecord persists one goal and the issues it produced.
 type goalRecord struct {
-	GoalID      string      `json:"goal_id"`
-	ProjectID   string      `json:"project_id"`
-	Identifier  string      `json:"identifier"`
-	Prompt      string      `json:"prompt"`
-	Folder      string      `json:"folder"`
-	Status      string      `json:"status"`
-	Created     []goalIssue `json:"created_issues"`
-	Fingerprint string      `json:"plan_fingerprint"`
+	GoalID         string      `json:"goal_id"`
+	ProjectID      string      `json:"project_id"`
+	Identifier     string      `json:"identifier"`
+	Prompt         string      `json:"prompt"`
+	Folder         string      `json:"folder"`
+	Status         string      `json:"status"`
+	Created        []goalIssue `json:"created_issues"`
+	Fingerprint    string      `json:"plan_fingerprint"`
+	LastReviewedAt int64       `json:"last_reviewed_at"`
 }
 
 func goalFingerprint(project, prompt string) string {
@@ -192,7 +194,7 @@ func goalSummaryBody(prompt string, plan map[string]any, created []goalIssue) st
 func existingGoal(db *sql.DB, fingerprint string) (goalRecord, error) {
 	var g goalRecord
 	var created string
-	err := db.QueryRow("SELECT goal_id,project_id,identifier,prompt,folder,status,created_issues,plan_fingerprint FROM goals WHERE plan_fingerprint=?", fingerprint).Scan(&g.GoalID, &g.ProjectID, &g.Identifier, &g.Prompt, &g.Folder, &g.Status, &created, &g.Fingerprint)
+	err := db.QueryRow("SELECT goal_id,project_id,identifier,prompt,folder,status,created_issues,plan_fingerprint,last_reviewed_at FROM goals WHERE plan_fingerprint=?", fingerprint).Scan(&g.GoalID, &g.ProjectID, &g.Identifier, &g.Prompt, &g.Folder, &g.Status, &created, &g.Fingerprint, &g.LastReviewedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return g, nil
 	}
@@ -208,14 +210,14 @@ func saveGoal(db *sql.DB, g goalRecord) error {
 	if err != nil {
 		return err
 	}
-	_, err = db.Exec(`INSERT INTO goals VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(goal_id) DO UPDATE SET created_issues=excluded.created_issues`, g.GoalID, g.ProjectID, g.Identifier, g.Prompt, g.Folder, g.Status, string(created), g.Fingerprint)
+	_, err = db.Exec(`INSERT INTO goals VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(goal_id) DO UPDATE SET created_issues=excluded.created_issues, last_reviewed_at=excluded.last_reviewed_at`, g.GoalID, g.ProjectID, g.Identifier, g.Prompt, g.Folder, g.Status, string(created), g.Fingerprint, g.LastReviewedAt)
 	return err
 }
 
 func loadGoal(db *sql.DB, id string) (goalRecord, error) {
 	var g goalRecord
 	var created string
-	err := db.QueryRow("SELECT goal_id,project_id,identifier,prompt,folder,status,created_issues,plan_fingerprint FROM goals WHERE goal_id=?", id).Scan(&g.GoalID, &g.ProjectID, &g.Identifier, &g.Prompt, &g.Folder, &g.Status, &created, &g.Fingerprint)
+	err := db.QueryRow("SELECT goal_id,project_id,identifier,prompt,folder,status,created_issues,plan_fingerprint,last_reviewed_at FROM goals WHERE goal_id=?", id).Scan(&g.GoalID, &g.ProjectID, &g.Identifier, &g.Prompt, &g.Folder, &g.Status, &created, &g.Fingerprint, &g.LastReviewedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return g, errors.New("no recorded goal for this issue")
 	}
@@ -224,6 +226,53 @@ func loadGoal(db *sql.DB, id string) (goalRecord, error) {
 	}
 	_ = json.Unmarshal([]byte(created), &g.Created)
 	return g, nil
+}
+
+func listGoals(db *sql.DB) ([]goalRecord, error) {
+	rows, err := db.Query("SELECT goal_id,project_id,identifier,prompt,folder,status,created_issues,plan_fingerprint,last_reviewed_at FROM goals WHERE status='ready' ORDER BY rowid")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var goals []goalRecord
+	for rows.Next() {
+		var g goalRecord
+		var created string
+		if err = rows.Scan(&g.GoalID, &g.ProjectID, &g.Identifier, &g.Prompt, &g.Folder, &g.Status, &created, &g.Fingerprint, &g.LastReviewedAt); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(created), &g.Created)
+		goals = append(goals, g)
+	}
+	return goals, rows.Err()
+}
+
+// commentTime parses a Linear comment's createdAt; unparseable values yield zero time.
+func commentTime(comment map[string]any) time.Time {
+	t, _ := time.Parse(time.RFC3339, textAt(comment, "createdAt"))
+	return t
+}
+
+// feedbackLatest returns the newest comment time in the set.
+func feedbackLatest(comments []map[string]any) time.Time {
+	var latest time.Time
+	for _, comment := range comments {
+		if t := commentTime(comment); t.After(latest) {
+			latest = t
+		}
+	}
+	return latest
+}
+
+// feedbackNewer returns comments newer than the given unix timestamp.
+func feedbackNewer(comments []map[string]any, since int64) []map[string]any {
+	out := []map[string]any{}
+	for _, comment := range comments {
+		if commentTime(comment).Unix() > since {
+			out = append(out, comment)
+		}
+	}
+	return out
 }
 
 // createIssue posts an issueCreate mutation and confirms the returned issue.
@@ -598,7 +647,8 @@ func reviewSummaryBody(refined, flagged []string, created []goalIssue) string {
 
 // reviewGoal reads stakeholder feedback on a goal and its children, then applies
 // follow-ups (new issues), in-place refinements (triage only) and flags (never closed).
-func (r *runner) reviewGoal(c *config, goalID string, dryRun bool, db *sql.DB, lock *os.File) error {
+// In sweep mode it only acts on feedback newer than the recorded high-water mark.
+func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, db *sql.DB, lock *os.File) error {
 	if !uuidRE.MatchString(goalID) {
 		return errors.New("review requires --goal with a recorded goal UUID")
 	}
@@ -623,10 +673,10 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun bool, db *sql.DB, l
 		return err
 	}
 	// Keep only team feedback; drop the runner's own bookkeeping comments.
-	var feedback []map[string]any
+	var allFeedback []map[string]any
 	for _, comment := range goalComments {
 		if textAt(comment, "user", "id") != viewer {
-			feedback = append(feedback, comment)
+			allFeedback = append(allFeedback, comment)
 		}
 	}
 	for _, child := range children {
@@ -636,11 +686,22 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun bool, db *sql.DB, l
 		}
 		for _, comment := range comments {
 			if textAt(comment, "user", "id") != viewer {
-				feedback = append(feedback, comment)
+				allFeedback = append(allFeedback, comment)
 			}
 		}
 	}
-	if err = writeJSON(filepath.Join(record.Folder, "goal-feedback.json"), map[string]any{"goal": goalID, "children": children, "comments": feedback}); err != nil {
+	latest := feedbackLatest(allFeedback)
+	var feedback []map[string]any
+	if sweep {
+		if latest.Unix() <= record.LastReviewedAt {
+			fmt.Fprintf(r.out, "%s: skipped; no new feedback\n", record.Identifier)
+			return nil
+		}
+		feedback = feedbackNewer(allFeedback, record.LastReviewedAt)
+	} else {
+		feedback = allFeedback
+	}
+	if err = writeJSON(filepath.Join(record.Folder, "goal-feedback.json"), map[string]any{"goal": goalID, "children": children, "comments": feedback, "all_comments": allFeedback}); err != nil {
 		return err
 	}
 	plan, err := r.launchGoalAgent(c, filepath.Join(record.Folder, "repo"), record.Folder, reviewPrompt(record.Prompt, feedback, children), lock)
@@ -654,9 +715,6 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun bool, db *sql.DB, l
 		printGoalPlan(r.out, plan)
 		fmt.Fprintln(r.out, "Dry run: no follow-ups or refinements were applied")
 		return nil
-	}
-	if len(planIssues(plan)) == 0 && len(planRefinements(plan)) == 0 && len(planFlags(plan)) == 0 {
-		return errors.New("review plan must propose at least one action")
 	}
 	byIdentifier := map[string]map[string]any{}
 	for _, child := range children {
@@ -729,11 +787,16 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun bool, db *sql.DB, l
 		flagged = append(flagged, fmt.Sprintf("%s: %s", textAt(item, "issue"), textAt(item, "reason")))
 	}
 	record.Created = append(record.Created, created...)
+	if latest.Unix() > record.LastReviewedAt {
+		record.LastReviewedAt = latest.Unix()
+	}
 	if err = saveGoal(db, record); err != nil {
 		return err
 	}
-	if err = r.postComment(goalID, reviewSummaryBody(refined, flagged, created), record.Folder, "review"); err != nil {
-		fmt.Fprintln(r.errOut, "Review applied; inspect review comment delivery evidence")
+	if len(created) > 0 || len(refined) > 0 || len(flagged) > 0 {
+		if err = r.postComment(goalID, reviewSummaryBody(refined, flagged, created), record.Folder, "review"); err != nil {
+			fmt.Fprintln(r.errOut, "Review applied; inspect review comment delivery evidence")
+		}
 	}
 	printGoalPlan(r.out, plan)
 	fmt.Fprintf(r.out, "%s: reviewed; %d follow-up(s), %d refined, %d flagged\n", record.Identifier, len(created), len(refined), len(flagged))
@@ -765,5 +828,64 @@ func (r *runner) executeGoalReview(configPath, goalID string, dryRun bool) error
 	if err != nil {
 		return err
 	}
-	return r.reviewGoal(c, goalID, dryRun, db, lock)
+	return r.reviewGoal(c, goalID, dryRun, false, db, lock)
+}
+
+// reviewAll sweeps every ready goal, reviewing only those with new feedback.
+func (r *runner) reviewAll(c *config, dryRun bool, db *sql.DB, lock *os.File) error {
+	goals, err := listGoals(db)
+	if err != nil {
+		return err
+	}
+	for _, record := range goals {
+		if err = r.reviewGoal(c, record.GoalID, dryRun, true, db, lock); err != nil {
+			var limit *providerLimit
+			if errors.As(err, &limit) {
+				if e := saveCooldown(db, c, limit); e != nil {
+					return errors.Join(err, e)
+				}
+				return err
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *runner) executeGoalReviewAll(configPath string, dryRun bool) error {
+	runs := filepath.Join(r.root, ".runs")
+	if err := os.MkdirAll(runs, 0700); err != nil {
+		return err
+	}
+	lock, err := os.OpenFile(filepath.Join(runs, "worker.lock"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return errors.New("worker still active; review refused")
+		}
+		return err
+	}
+	db, err := openState(filepath.Join(runs, "state.sqlite3"))
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	c, err := r.loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if !dryRun {
+		limit, err := activeCooldown(db, c)
+		if err != nil {
+			return err
+		}
+		if limit != nil {
+			fmt.Fprintln(r.out, limit.Error())
+			return nil
+		}
+	}
+	return r.reviewAll(c, dryRun, db, lock)
 }

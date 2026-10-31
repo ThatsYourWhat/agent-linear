@@ -251,14 +251,18 @@ func (r *runner) cli() *cobra.Command {
 	root.AddCommand(goal)
 	review := &cobra.Command{Use: "review", Short: "Read feedback on a goal and create follow-ups or refine triage issues"}
 	var reviewGoal string
-	var reviewDryRun bool
+	var reviewDryRun, reviewAll bool
 	review.Flags().StringVar(&reviewGoal, "goal", "", "Recorded goal Linear UUID")
+	review.Flags().BoolVar(&reviewAll, "all", false, "Review every recorded goal that has new feedback")
 	review.Flags().BoolVar(&reviewDryRun, "dry-run", false, "Read feedback and print the revised plan without applying it")
 	review.PreRun = func(cmd *cobra.Command, args []string) { r.ctx = cmd.Context() }
 	review.RunE = func(cmd *cobra.Command, args []string) error {
 		path, err := absPath(configPath)
 		if err != nil {
 			return err
+		}
+		if reviewAll {
+			return r.executeGoalReviewAll(path, reviewDryRun)
 		}
 		return r.executeGoalReview(path, reviewGoal, reviewDryRun)
 	}
@@ -435,6 +439,17 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 				fmt.Fprintf(r.errOut, "%s: skipped: %v\n", textAt(issue, "identifier"), err)
 				continue
 			}
+			var limit *providerLimit
+			if errors.As(err, &limit) && !limit.recordingFailed {
+				pollOutcome = "deferred"
+				fmt.Fprintln(r.out, limit.Error())
+				return nil
+			}
+			return err
+		}
+	}
+	if action == "poll" && !dryRun {
+		if err = r.reviewAll(c, false, db, lock); err != nil {
 			var limit *providerLimit
 			if errors.As(err, &limit) && !limit.recordingFailed {
 				pollOutcome = "deferred"
