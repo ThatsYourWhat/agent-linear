@@ -716,6 +716,15 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, db *sq
 		fmt.Fprintln(r.out, "Dry run: no follow-ups or refinements were applied")
 		return nil
 	}
+	// Consume the feedback before any Linear mutation: advance the high-water mark
+	// and persist it first, so a failure partway through cannot be re-processed by
+	// the next sweep and duplicate already-created work.
+	if latest.Unix() > record.LastReviewedAt {
+		record.LastReviewedAt = latest.Unix()
+		if err = saveGoal(db, record); err != nil {
+			return err
+		}
+	}
 	byIdentifier := map[string]map[string]any{}
 	for _, child := range children {
 		if identifier := textAt(child, "identifier"); identifier != "" {
@@ -787,9 +796,6 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, db *sq
 		flagged = append(flagged, fmt.Sprintf("%s: %s", textAt(item, "issue"), textAt(item, "reason")))
 	}
 	record.Created = append(record.Created, created...)
-	if latest.Unix() > record.LastReviewedAt {
-		record.LastReviewedAt = latest.Unix()
-	}
 	if err = saveGoal(db, record); err != nil {
 		return err
 	}

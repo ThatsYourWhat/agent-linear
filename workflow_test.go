@@ -563,7 +563,7 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 		data = map[string]any{"workflowStates": map[string]any{"nodes": nodes, "pageInfo": map[string]any{"hasNextPage": false}}}
 	case strings.Contains(call.Query, "issueUpdate("):
 		state := textAt(call.Variables, "input", "stateId")
-		if f.outcome == "start-state-error" || f.outcome == "review-state-error" && state == reviewID {
+		if f.outcome == "start-state-error" || f.outcome == "review-state-error" && state == reviewID || f.outcome == "refine-error" && state == "" {
 			w.WriteHeader(503)
 			fmt.Fprint(w, "test-secret")
 			return

@@ -573,3 +573,37 @@ func TestGoalReviewAllSkipsBadGoal(t *testing.T) {
 		t.Fatal("good goal was not reviewed")
 	}
 }
+
+func TestGoalReviewPartialFailureNoDuplicate(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, api, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	mustWrite(t, filepath.Join(root, "outcome"), "ready")
+	// Fail the in-place refinement after the follow-up has already been created.
+	api.mu.Lock()
+	api.outcome = "refine-error"
+	api.mu.Unlock()
+	if err := executeTest(r, "goal", "review", "--all"); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	creates := countIssueCreates(api.calls)
+	api.mu.Unlock()
+	if creates != 1 {
+		t.Fatalf("expected the follow-up to be created once, got %d", creates)
+	}
+	api.mu.Lock()
+	api.outcome = ""
+	api.mu.Unlock()
+	// The high-water mark was advanced before applying, so a retry must skip and
+	// must not duplicate the already-created follow-up.
+	if err := executeTest(r, "goal", "review", "--all"); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if countIssueCreates(api.calls) != creates {
+		t.Fatal("partial failure duplicated work on retry")
+	}
+}
