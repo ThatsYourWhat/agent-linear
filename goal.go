@@ -320,36 +320,36 @@ func (r *runner) labelIDs(names []string) (map[string]string, error) {
 	return result, nil
 }
 
-// issueComments returns the comment thread for one issue.
-func (r *runner) issueComments(id string) ([]map[string]any, error) {
+// goalReviewRead fetches a goal's comments and its children (each with their own
+// nested comments) in a single request, collapsing what would otherwise be 3+N
+// separate reads per goal per poll tick.
+func (r *runner) goalReviewRead(goalID string) (goalComments, children, childComments []map[string]any, err error) {
 	var data struct {
 		Issue struct {
 			Comments struct {
 				Nodes []map[string]any `json:"nodes"`
 			} `json:"comments"`
+			Children struct {
+				Nodes []map[string]any `json:"nodes"`
+			} `json:"children"`
 		} `json:"issue"`
 	}
-	if err := r.graphql(`query GoalComments($id: String!) { issue(id: $id) { comments { nodes { id body user { id name } createdAt } } } }`, map[string]any{"id": id}, &data); err != nil {
-		return nil, err
+	if err = r.graphql(`query GoalReviewRead($id: String!) { issue(id: $id) { comments { nodes { id body user { id name } createdAt } } children(first: 50) { nodes { id identifier title state { id name } comments { nodes { id body user { id name } createdAt } } } } } }`, map[string]any{"id": goalID}, &data); err != nil {
+		return nil, nil, nil, err
 	}
-	return data.Issue.Comments.Nodes, nil
-}
-
-// childIssues returns the sub-issues of a parent goal.
-func (r *runner) childIssues(parentID string) ([]map[string]any, error) {
-	var data struct {
-		Issues *struct {
-			Nodes []map[string]any `json:"nodes"`
-		} `json:"issues"`
+	for _, node := range data.Issue.Children.Nodes {
+		children = append(children, node)
+		if comments, ok := node["comments"].(map[string]any); ok {
+			if nodes, ok := comments["nodes"].([]any); ok {
+				for _, c := range nodes {
+					if m, ok := c.(map[string]any); ok {
+						childComments = append(childComments, m)
+					}
+				}
+			}
+		}
 	}
-	filter := map[string]any{"parent": map[string]any{"id": map[string]any{"eq": parentID}}}
-	if err := r.graphql(`query GoalChildren($filter: IssueFilter!) { issues(first: 50, filter: $filter) { nodes { `+issueFields+` } } }`, map[string]any{"filter": filter}, &data); err != nil {
-		return nil, err
-	}
-	if data.Issues == nil {
-		return nil, errors.New("Linear returned no child issues")
-	}
-	return data.Issues.Nodes, nil
+	return data.Issue.Comments.Nodes, children, childComments, nil
 }
 
 // refineIssue edits an existing issue's title/description in place.
@@ -670,7 +670,8 @@ func reviewSummaryBody(refined, flagged []string, created []goalIssue) string {
 // reviewGoal reads stakeholder feedback on a goal and its children, then applies
 // follow-ups (new issues), in-place refinements (triage only) and flags (never closed).
 // In sweep mode it only acts on feedback newer than the recorded high-water mark.
-func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, db *sql.DB, lock *os.File) error {
+// A non-empty viewer is reused across goals; an empty viewer is resolved here.
+func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, viewer string, db *sql.DB, lock *os.File) error {
 	if !uuidRE.MatchString(goalID) {
 		return errors.New("review requires --goal with a recorded goal UUID")
 	}
@@ -682,15 +683,13 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, db *sq
 	if rt == nil {
 		return errors.New("recorded goal project is not configured")
 	}
-	viewer, err := r.viewer()
-	if err != nil {
-		return err
+	if viewer == "" {
+		viewer, err = r.viewer()
+		if err != nil {
+			return err
+		}
 	}
-	goalComments, err := r.issueComments(goalID)
-	if err != nil {
-		return err
-	}
-	children, err := r.childIssues(goalID)
+	goalComments, children, childComments, err := r.goalReviewRead(goalID)
 	if err != nil {
 		return err
 	}
@@ -701,15 +700,9 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, db *sq
 			allFeedback = append(allFeedback, comment)
 		}
 	}
-	for _, child := range children {
-		comments, err := r.issueComments(textAt(child, "id"))
-		if err != nil {
-			return err
-		}
-		for _, comment := range comments {
-			if textAt(comment, "user", "id") != viewer {
-				allFeedback = append(allFeedback, comment)
-			}
+	for _, comment := range childComments {
+		if textAt(comment, "user", "id") != viewer {
+			allFeedback = append(allFeedback, comment)
 		}
 	}
 	latest := feedbackLatest(allFeedback)
@@ -856,7 +849,7 @@ func (r *runner) executeGoalReview(configPath, goalID string, dryRun bool) error
 	if err != nil {
 		return err
 	}
-	return r.reviewGoal(c, goalID, dryRun, false, db, lock)
+	return r.reviewGoal(c, goalID, dryRun, false, "", db, lock)
 }
 
 // reviewAll sweeps every ready goal, reviewing only those with new feedback.
@@ -865,8 +858,15 @@ func (r *runner) reviewAll(c *config, dryRun bool, db *sql.DB, lock *os.File) er
 	if err != nil {
 		return err
 	}
+	if len(goals) == 0 {
+		return nil
+	}
+	viewer, err := r.viewer()
+	if err != nil {
+		return err
+	}
 	for _, record := range goals {
-		if err = r.reviewGoal(c, record.GoalID, dryRun, true, db, lock); err != nil {
+		if err = r.reviewGoal(c, record.GoalID, dryRun, true, viewer, db, lock); err != nil {
 			var limit *providerLimit
 			if errors.As(err, &limit) {
 				if e := saveCooldown(db, c, limit); e != nil {

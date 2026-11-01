@@ -633,3 +633,41 @@ func TestGoalReviewDirectiveMarker(t *testing.T) {
 		t.Fatal("context feedback not surfaced as context", prompt)
 	}
 }
+
+func TestGoalReviewAllCollapsesReads(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, api, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	// Add a second, already-reviewed goal so the sweep visits two goals.
+	secondID := "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+	secondFolder := filepath.Join(root, ".runs", secondID)
+	if err := os.MkdirAll(filepath.Join(secondFolder, "repo"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	second := goalRecord{GoalID: secondID, ProjectID: projectID, Identifier: "GOAL-2", Prompt: "other", Folder: secondFolder, Status: "ready", Created: nil, Fingerprint: "y", LastReviewedAt: time.Now().Add(time.Hour).Unix()}
+	if err := saveGoal(db, second); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, "outcome"), "ready")
+	if err := executeTest(r, "goal", "review", "--all"); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	viewers, reads := 0, 0
+	for _, call := range api.calls {
+		if strings.Contains(call.Query, "viewer") {
+			viewers++
+		}
+		if strings.Contains(call.Query, "GoalReviewRead") {
+			reads++
+		}
+	}
+	if viewers != 1 {
+		t.Fatalf("expected one viewer call for the whole sweep, got %d", viewers)
+	}
+	if reads != 2 {
+		t.Fatalf("expected one combined read per goal, got %d", reads)
+	}
+}

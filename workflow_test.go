@@ -582,19 +582,26 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		data = map[string]any{"commentCreate": map[string]any{"success": true, "comment": map[string]any{"id": issueID}}}
-	case strings.Contains(call.Query, "GoalComments"):
+	case strings.Contains(call.Query, "GoalReviewRead"):
 		id := textAt(call.Variables, "id")
-		comments := f.comments[id]
-		data = map[string]any{"issue": map[string]any{"comments": map[string]any{"nodes": comments}}}
-	case strings.Contains(call.Query, "GoalChildren"):
-		parent := textAt(call.Variables, "filter", "parent", "id", "eq")
-		nodes := []any{}
+		goalComments := f.comments[id]
+		childNodes := []any{}
 		for _, child := range f.children {
-			if textAt(child, "parent", "id") == parent {
-				nodes = append(nodes, child)
+			if textAt(child, "parent", "id") == id {
+				node := map[string]any{
+					"id":         textAt(child, "id"),
+					"identifier": textAt(child, "identifier"),
+					"title":      textAt(child, "title"),
+					"state":      child["state"],
+					"comments":   map[string]any{"nodes": f.comments[textAt(child, "id")]},
+				}
+				childNodes = append(childNodes, node)
 			}
 		}
-		data = map[string]any{"issues": map[string]any{"nodes": nodes}}
+		data = map[string]any{"issue": map[string]any{
+			"comments": map[string]any{"nodes": goalComments},
+			"children": map[string]any{"nodes": childNodes},
+		}}
 	case strings.Contains(call.Query, "issues("):
 		f.queueReads++
 		nodes := []any{f.issue}
