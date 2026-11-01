@@ -547,3 +547,29 @@ func TestGoalReviewAllCooldown(t *testing.T) {
 		t.Fatal("cooldown must skip the sweep before any Linear call", api.calls)
 	}
 }
+
+func TestGoalReviewAllSkipsBadGoal(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, api, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	// Add a goal whose project is no longer configured; it must not abort the sweep.
+	badID := "99999999-9999-4999-8999-999999999999"
+	badFolder := filepath.Join(root, ".runs", badID)
+	if err := os.MkdirAll(filepath.Join(badFolder, "repo"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	bad := goalRecord{GoalID: badID, ProjectID: "00000000-0000-4000-8000-000000000000", Identifier: "GOAL-BAD", Prompt: "other", Folder: badFolder, Status: "ready", Created: nil, Fingerprint: "x"}
+	if err := saveGoal(db, bad); err != nil {
+		t.Fatal(err)
+	}
+	mustWrite(t, filepath.Join(root, "outcome"), "ready")
+	if err := executeTest(r, "goal", "review", "--all"); err != nil {
+		t.Fatal("sweep must not abort on an un-reviewable goal", err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if countIssueCreates(api.calls) == 0 {
+		t.Fatal("good goal was not reviewed")
+	}
+}

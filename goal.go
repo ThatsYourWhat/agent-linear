@@ -846,7 +846,8 @@ func (r *runner) reviewAll(c *config, dryRun bool, db *sql.DB, lock *os.File) er
 				}
 				return err
 			}
-			return err
+			// One un-reviewable goal must not abort the whole sweep.
+			fmt.Fprintf(r.errOut, "%s: review skipped: %v\n", record.Identifier, redact(err.Error()))
 		}
 	}
 	return nil
