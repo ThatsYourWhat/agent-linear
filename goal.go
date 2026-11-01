@@ -601,18 +601,40 @@ func (r *runner) executeGoal(configPath, project, promptText, promptFile string,
 	return r.runGoal(c, project, promptText, dryRun, autostart, runs, db, lock)
 }
 
+// isDirective reports whether a comment is an explicit directive: it starts with
+// "/feedback" or mentions "@agent".
+func isDirective(comment map[string]any) bool {
+	body := strings.ToLower(strings.TrimSpace(textAt(comment, "body")))
+	return strings.HasPrefix(body, "/feedback") || strings.Contains(body, "@agent")
+}
+
 func reviewPrompt(goal string, feedback, children []map[string]any) string {
+	var directives, context []map[string]any
+	for _, comment := range feedback {
+		if isDirective(comment) {
+			directives = append(directives, comment)
+		} else {
+			context = append(context, comment)
+		}
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are reviewing a goal and its issues to incorporate stakeholder feedback. Do not modify any files or create commits; this is read-only analysis.\n\nGoal: %s\n\nCurrent issues:\n", goal)
 	for _, child := range children {
 		fmt.Fprintf(&b, "- %s [%s]: %s\n", textAt(child, "identifier"), textAt(child, "state", "name"), textAt(child, "title"))
 	}
-	if len(feedback) > 0 {
-		b.WriteString("\nStakeholder feedback:\n")
-		for _, comment := range feedback {
+	if len(directives) > 0 {
+		b.WriteString("\nExplicit directives (act on every one):\n")
+		for _, comment := range directives {
 			fmt.Fprintf(&b, "- %s: %s\n", textAt(comment, "user", "name"), textAt(comment, "body"))
 		}
-	} else {
+	}
+	if len(context) > 0 {
+		b.WriteString("\nOther team feedback (context):\n")
+		for _, comment := range context {
+			fmt.Fprintf(&b, "- %s: %s\n", textAt(comment, "user", "name"), textAt(comment, "body"))
+		}
+	}
+	if len(feedback) == 0 {
 		b.WriteString("\nNo new stakeholder feedback.\n")
 	}
 	b.WriteString("\nProduce a plan with:\n- issues: new follow-up issues to create, each with a title and a description stating requirements and acceptance criteria.\n- refinements: edits to EXISTING issues (referenced by identifier), only when they are still in triage; give the new title and/or description.\n- flags: stale, duplicate or superseded issues to flag for a human to close.\n\nReturn only JSON matching this schema, with no markdown fences:\n")

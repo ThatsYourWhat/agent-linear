@@ -607,3 +607,29 @@ func TestGoalReviewPartialFailureNoDuplicate(t *testing.T) {
 		t.Fatal("partial failure duplicated work on retry")
 	}
 }
+
+func TestGoalReviewDirectiveMarker(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, api, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	api.comments[reviewGoalID] = append(api.comments[reviewGoalID],
+		map[string]any{"id": "c4", "body": "@agent prioritize reads", "user": map[string]any{"id": "carol", "name": "Carol"}, "createdAt": "2026-10-31T10:15:00Z"},
+		map[string]any{"id": "c5", "body": "nice work on writes", "user": map[string]any{"id": "dave", "name": "Dave"}, "createdAt": "2026-10-31T10:16:00Z"},
+	)
+	mustWrite(t, filepath.Join(root, "outcome"), "ready")
+	if err := executeTest(r, "goal", "review", "--goal", reviewGoalID); err != nil {
+		t.Fatal(err)
+	}
+	promptBytes, err := os.ReadFile(filepath.Join(root, ".runs", reviewGoalID, "goal-prompt.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(promptBytes)
+	if !strings.Contains(prompt, "Explicit directives") || !strings.Contains(prompt, "@agent prioritize reads") {
+		t.Fatal("directive marker not surfaced as an explicit directive", prompt)
+	}
+	if !strings.Contains(prompt, "Other team feedback") || !strings.Contains(prompt, "nice work on writes") {
+		t.Fatal("context feedback not surfaced as context", prompt)
+	}
+}
