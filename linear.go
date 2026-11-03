@@ -105,7 +105,7 @@ func (r *runner) issue(id string) (map[string]any, error) {
 	if err := r.graphql(`query RunIssue($id: String!) { issue(id: $id) { `+issueFields+` } }`, map[string]any{"id": id}, &data); err != nil {
 		return nil, err
 	}
-	if textAt(data.Issue, "id") != id {
+	if textAt(data.Issue, "id") != id && textAt(data.Issue, "identifier") != id {
 		return nil, errors.New("Linear returned no matching current issue")
 	}
 	return data.Issue, nil

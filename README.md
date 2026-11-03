@@ -460,20 +460,21 @@ log; they do not send external alerts or prove that cron is installed. A monitor
 must invoke `status` to detect a stopped scheduler. A long active run may have an
 old successful-completion timestamp while later cron ticks continue arriving.
 
-For a saved issue snapshot, the same launcher can run with Linear access for
-claim/finish comments and status updates:
+To run one issue directly without the scheduled poller, pass its Linear
+identifier (for example `INT-3`) or UUID. The runner fetches the issue live,
+derives its project route from `config.json`, and proceeds through the normal
+claim/checkout/PR/finish flow:
 
 ```bash
-./agent-linear run --project REAL_PROJECT_UUID --issue-file /absolute/path/issue.json --dry-run
-./agent-linear run --project REAL_PROJECT_UUID --issue-file /absolute/path/issue.json
+./agent-linear run --issue INT-3 --dry-run
+./agent-linear run --issue INT-3
 ```
 
-The snapshot uses Linear's `id`, `identifier`, `title`, `description`, `url`,
-and nested `project.id`, `team.id`, `state.id`. Supply the full body and linked
-dependency context. Saved snapshots are deliberate manual inputs, not refreshed
-from Linear for task content; current ownership and readiness are still checked
-live. A stale snapshot cannot take another user's issue. A live target session
-still needs access to the selected CLI, its provider, and GitHub.
+The fetched issue supplies the task body and its `project.id`, `team.id`, and
+`state.id`; the project must be a configured route. Current ownership and
+readiness are still checked live, so `run` cannot take another user's issue. A
+live target session still needs access to the selected CLI, its provider, and
+GitHub.
 
 After availability is confirmed and the local claim is committed, the runner resolves the authenticated user and
 both team statuses, then posts

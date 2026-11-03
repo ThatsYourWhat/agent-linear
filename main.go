@@ -184,7 +184,7 @@ func (r *runner) cli() *cobra.Command {
 		{"setup", "Collect and validate project routes without scheduling work"},
 		{"smoke-test", "Check CLI, repository, signing-profile and Linear read access"},
 		{"poll", "Process the eligible Linear queue serially"},
-		{"run", "Process one saved issue snapshot"},
+		{"run", "Run one issue by identifier or UUID"},
 		{"resume", "Continue one recorded session as its assigned owner"},
 		{"reconcile", "Verify and finish one recorded run without relaunching work"},
 		{"status", "Print health and the five most recently started issues"},
@@ -196,7 +196,7 @@ func (r *runner) cli() *cobra.Command {
 	for _, spec := range commands {
 		name := spec.name
 		var dryRun, setup, all, apply bool
-		var issueFile, project string
+		var issueRef string
 		cmd := &cobra.Command{Use: name, Short: spec.description, Args: cobra.NoArgs, RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := absPath(configPath)
 			if err != nil {
@@ -205,7 +205,7 @@ func (r *runner) cli() *cobra.Command {
 			if cmd.Name() == "prune-sessions" {
 				dryRun = !apply
 			}
-			return r.execute(cmd.Name(), path, issueFile, project, dryRun, setup, all)
+			return r.execute(cmd.Name(), path, issueRef, dryRun, setup, all)
 		}}
 		switch name {
 		case "poll", "run":
@@ -218,11 +218,10 @@ func (r *runner) cli() *cobra.Command {
 			cmd.Flags().BoolVar(&apply, "apply", false, "Permanently delete the eligible recorded CLI sessions")
 		}
 		if name == "run" {
-			cmd.Flags().StringVar(&issueFile, "issue-file", "", "Saved issue JSON snapshot")
-			cmd.Flags().StringVar(&project, "project", "", "Configured Linear project UUID")
+			cmd.Flags().StringVar(&issueRef, "issue", "", "Issue identifier or UUID to fetch and run")
 		}
 		if name == "reconcile" || name == "resume" {
-			cmd.Flags().StringVar(&issueFile, "issue", "", "Recorded issue UUID")
+			cmd.Flags().StringVar(&issueRef, "issue", "", "Recorded issue UUID")
 		}
 		cmd.PreRun = func(cmd *cobra.Command, args []string) { r.ctx = cmd.Context() }
 		root.AddCommand(cmd)
@@ -270,7 +269,7 @@ func (r *runner) cli() *cobra.Command {
 	return root
 }
 
-func (r *runner) execute(action, configPath, issueFile, project string, dryRun, setup, all bool) (runErr error) {
+func (r *runner) execute(action, configPath, issueRef string, dryRun, setup, all bool) (runErr error) {
 	if action == "setup" {
 		return r.configureProjects(configPath)
 	}
@@ -337,10 +336,10 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 		return err
 	}
 	if action == "reconcile" {
-		return r.reconcile(c, issueFile, runs, db)
+		return r.reconcile(c, issueRef, runs, db)
 	}
 	if action == "resume" {
-		return r.resume(c, issueFile, runs, db, lock)
+		return r.resume(c, issueRef, runs, db, lock)
 	}
 	if action == "prune-sessions" {
 		return r.pruneSessions(c, runs, db, dryRun)
@@ -380,14 +379,18 @@ func (r *runner) execute(action, configPath, issueFile, project string, dryRun, 
 	var queue []queuedIssue
 	pollPhase = "Linear queue read"
 	if action == "run" {
-		if issueFile == "" || c.Projects[project] == nil {
-			return errors.New("run requires --issue-file and a configured --project UUID")
+		if issueRef == "" {
+			return errors.New("run requires --issue with an issue identifier or UUID")
 		}
-		var issue map[string]any
-		if err = readJSON(issueFile, &issue); err != nil {
+		fetched, err := r.issue(issueRef)
+		if err != nil {
 			return err
 		}
-		queue = append(queue, queuedIssue{project, issue})
+		projectID := textAt(fetched, "project", "id")
+		if c.Projects[projectID] == nil {
+			return fmt.Errorf("issue %s belongs to project %s, which is not a configured route", textAt(fetched, "identifier"), projectID)
+		}
+		queue = append(queue, queuedIssue{projectID, fetched})
 	} else {
 		for _, id := range projectIDs(c) {
 			items, e := r.issues(id, c.Projects[id], "")

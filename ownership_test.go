@@ -116,17 +116,13 @@ func TestOwnershipChangeDuringAvailabilityPreventsClaim(t *testing.T) {
 	}
 }
 
-func TestSavedSnapshotCannotOverrideCurrentOwner(t *testing.T) {
+func TestRunRespectsCurrentOwner(t *testing.T) {
 	root, r, _, api := gapRunner(t, "ready")
 	api.issue["assignee"] = map[string]any{"id": projectID}
-	path := filepath.Join(root, "snapshot.json")
-	if err := writeJSON(path, testIssue()); err != nil {
-		t.Fatal(err)
-	}
-	if err := executeTest(r, "run", "--project", projectID, "--issue-file", path); err != nil {
+	if err := executeTest(r, "run", "--issue", issueID); err != nil {
 		t.Fatal(err)
 	}
 	if exists(filepath.Join(root, "preflight-calls")) || exists(filepath.Join(root, ".runs", issueID)) {
-		t.Fatal("stale saved snapshot bypassed current ownership")
+		t.Fatal("run bypassed current ownership")
 	}
 }

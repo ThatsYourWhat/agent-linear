@@ -717,10 +717,7 @@ func TestIssueWorkflow(t *testing.T) {
 					if err = writeJSON(filepath.Join(root, "config.json"), c); err != nil {
 						t.Fatal(err)
 					}
-					if err = writeJSON(filepath.Join(root, "issue.json"), testIssue()); err != nil {
-						t.Fatal(err)
-					}
-					err = executeTest(r, "run", "--project", projectID, "--issue-file", filepath.Join(root, "issue.json"))
+					err = executeTest(r, "run", "--issue", "APP-1")
 				} else {
 					err = r.runIssue(c, projectID, testIssue(), runs, db, nil, false)
 				}
