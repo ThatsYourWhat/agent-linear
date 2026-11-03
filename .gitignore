@@ -2,3 +2,4 @@ config.json
 .env
 .runs/
 agent-linear
+blank-agent-linear
