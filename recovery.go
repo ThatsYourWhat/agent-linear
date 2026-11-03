@@ -167,7 +167,7 @@ func (r *runner) reconcile(c *config, id, runs string, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	viewer, err := r.viewer()
+	viewer, _, err := r.viewer()
 	if err != nil {
 		return err
 	}

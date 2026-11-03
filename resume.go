@@ -20,7 +20,7 @@ func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (
 	if err != nil {
 		return err
 	}
-	viewer, err := r.viewer()
+	viewer, _, err := r.viewer()
 	if err != nil {
 		return err
 	}

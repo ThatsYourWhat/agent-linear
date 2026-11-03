@@ -690,7 +690,7 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, viewer
 		return errors.New("triage_state_id is required in the project route to review goal issues")
 	}
 	if viewer == "" {
-		viewer, err = r.viewer()
+		viewer, _, err = r.viewer()
 		if err != nil {
 			return err
 		}
@@ -867,7 +867,7 @@ func (r *runner) reviewAll(c *config, dryRun bool, db *sql.DB, lock *os.File) er
 	if len(goals) == 0 {
 		return nil
 	}
-	viewer, err := r.viewer()
+	viewer, _, err := r.viewer()
 	if err != nil {
 		return err
 	}

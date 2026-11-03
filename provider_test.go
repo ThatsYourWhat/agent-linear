@@ -93,7 +93,7 @@ func TestLimitsDeferThenRecoverOrPreserveWork(t *testing.T) {
 				source := testRepo(t, root)
 				fixtureBinaries(t, root)
 				mustWrite(t, filepath.Join(root, "outcome"), outcome)
-				api := &linearFixture{issue: testIssue()}
+				api := &linearFixture{issue: testIssue(), viewerName: "Test User"}
 				r := newFixtureRunner(t, root, source, api)
 				var output bytes.Buffer
 				r.out = &output
@@ -160,6 +160,9 @@ func TestLimitsDeferThenRecoverOrPreserveWork(t *testing.T) {
 					comment, err := os.ReadFile(filepath.Join(folder, "finish-comment.txt"))
 					if err != nil || !strings.Contains(string(comment), "partial work preserved") || !strings.Contains(string(comment), "automatically resume") {
 						t.Fatal(string(comment), err)
+					}
+					if strings.Contains(string(comment), "@Test User ") {
+						t.Fatal("provider-limit block must not tag the assignee", string(comment))
 					}
 				}
 				// A fresh runner sees the SQLite cooldown before polling or consuming another issue.

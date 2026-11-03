@@ -92,6 +92,7 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	}
 	status, prURL := "failed", ""
 	noCode := false
+	assigneeName := ""
 	defer func() {
 		if runErr != nil {
 			var limit *providerLimit
@@ -137,12 +138,17 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 		if url == "" {
 			url = "unavailable (no PR URL recorded)"
 		}
-		body := fmt.Sprintf("Run finished on %s with status %s. View pull request at %s. %s", hostname, status, url, resume)
+		var limit *providerLimit
+		providerLimited := errors.As(runErr, &limit)
+		mention := ""
+		if assigneeName != "" && (status == "failed" || status == "blocked" && !providerLimited) {
+			mention = "@" + assigneeName + " "
+		}
+		body := mention + fmt.Sprintf("Run finished on %s with status %s. View pull request at %s. %s", hostname, status, url, resume)
 		if status == "ready" && noCode {
 			body = fmt.Sprintf("Run finished on %s with status ready. No code changes; PR not required. Evidence: result.json in the retained run artifacts. %s", hostname, resume)
 		}
-		var limit *providerLimit
-		if errors.As(runErr, &limit) {
+		if providerLimited {
 			body += " Provider limit reached after launch; partial work preserved. Cron will check availability and automatically resume the recorded session, subject to recovery checks. " + limit.Error()
 		}
 		// Delivery failure is recorded by postComment; preserve the saved outcome.
@@ -153,10 +159,11 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	if err = recordActivity(folder, "starting"); err != nil {
 		return err
 	}
-	assignee, err := r.viewer()
+	assignee, viewerName, err := r.viewer()
 	if err != nil {
 		return err
 	}
+	assigneeName = viewerName
 	if owner := textAt(current, "assignee", "id"); owner != "" && owner != assignee {
 		return errors.New("issue owner does not match the authenticated Linear user")
 	}

@@ -520,7 +520,10 @@ Run finished on <hostname> with status <run status>. View pull request at <GitHu
 ```
 
 Finish-comment statuses are `ready`, `blocked`, or `failed`; untouched `deferred`
-issues receive no Linear comment. Session IDs come from CLI events:
+issues receive no Linear comment. Failed runs and blocked runs that will not
+auto-recover prepend an `@mention` of the assignee so manual resolution is
+surfaced; provider-limit blocks that resume automatically are not mentioned.
+Session IDs come from CLI events:
 Codex's `thread.started.thread_id` or OpenCode's `sessionID`, not the agent report.
 The comment supplies the managed resume command for both engines. Resume on the
 named machine under the original OS user, from outside the feature checkout.

@@ -482,6 +482,7 @@ type linearFixture struct {
 	liveState   string
 	liveIssue   string
 	viewerID    string
+	viewerName  string
 	createCount int
 	children    []map[string]any
 	comments    map[string][]map[string]any
@@ -554,7 +555,11 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 		if f.outcome == "viewer-error" {
 			id = ""
 		}
-		data = map[string]any{"viewer": map[string]any{"id": id}}
+		viewer := map[string]any{"id": id}
+		if f.viewerName != "" {
+			viewer["name"] = f.viewerName
+		}
+		data = map[string]any{"viewer": viewer}
 	case strings.Contains(call.Query, "workflowStates("):
 		nodes := []any{map[string]any{"id": progressID, "name": "In Progress"}, map[string]any{"id": reviewID, "name": "In Review"}}
 		if f.outcome == "missing-state" {
@@ -693,7 +698,7 @@ func TestIssueWorkflow(t *testing.T) {
 				source := testRepo(t, root)
 				fixtureBinaries(t, root)
 				mustWrite(t, filepath.Join(root, "outcome"), outcome)
-				api := &linearFixture{outcome: outcome}
+				api := &linearFixture{outcome: outcome, viewerName: "Test User"}
 				r := newFixtureRunner(t, root, source, api)
 				c := testConfig(source)
 				c.Engine = engine
@@ -773,6 +778,10 @@ func TestIssueWorkflow(t *testing.T) {
 				}
 				if !strings.Contains(string(comment), "status "+expected+".") {
 					t.Fatal(string(comment))
+				}
+				wantMention := (expected == "failed" || expected == "blocked") && outcome != "viewer-error"
+				if strings.Contains(string(comment), "@Test User ") != wantMention {
+					t.Fatal("unexpected assignee mention", outcome, string(comment))
 				}
 				original, e := os.ReadFile(filepath.Join(source, "app.txt"))
 				if e != nil || string(original) != "human uncommitted work\n" {

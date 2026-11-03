@@ -156,17 +156,20 @@ func (r *runner) workflowStates(team string) (map[string]string, error) {
 	}
 	return states, nil
 }
-func (r *runner) viewer() (string, error) {
+func (r *runner) viewer() (string, string, error) {
 	var data struct {
-		Viewer struct{ ID string } `json:"viewer"`
+		Viewer struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"viewer"`
 	}
-	if err := r.graphql(`query RunUser { viewer { id } }`, map[string]any{}, &data); err != nil {
-		return "", err
+	if err := r.graphql(`query RunUser { viewer { id name } }`, map[string]any{}, &data); err != nil {
+		return "", "", err
 	}
 	if !uuidRE.MatchString(data.Viewer.ID) {
-		return "", errors.New("Linear returned no valid current user")
+		return "", "", errors.New("Linear returned no valid current user")
 	}
-	return data.Viewer.ID, nil
+	return data.Viewer.ID, data.Viewer.Name, nil
 }
 func (r *runner) updateIssueState(issueID, stateID, folder, stage, assigneeID string, assign bool) error {
 	input := map[string]any{"stateId": stateID}
