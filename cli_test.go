@@ -96,7 +96,7 @@ func TestConfigurationGates(t *testing.T) {
 	root := t.TempDir()
 	source := testRepo(t, root)
 	r := newRunner(filepath.Join(root, "agent-linear"))
-	for _, variant := range []string{"valid", "engine", "model", "project", "team", "ready", "triage", "triage-equal", "origin", "base", "unsigned", "mode", "environment", "instructions", "relative-path"} {
+	for _, variant := range []string{"valid", "triage-empty", "engine", "model", "project", "team", "ready", "triage", "triage-equal", "origin", "base", "unsigned", "mode", "environment", "instructions", "relative-path"} {
 		t.Run(variant, func(t *testing.T) {
 			c := testConfig(source)
 			rt := c.Projects[projectID]
@@ -117,6 +117,8 @@ func TestConfigurationGates(t *testing.T) {
 				rt.TriageStateID = "wrong"
 			case "triage-equal":
 				rt.TriageStateID = rt.ReadyStateID
+			case "triage-empty":
+				rt.TriageStateID = ""
 			case "origin":
 				rt.GitHubRepo = "another/repo"
 			case "base":
@@ -132,7 +134,8 @@ func TestConfigurationGates(t *testing.T) {
 			case "relative-path":
 				rt.RepoPath = "."
 			}
-			if err := r.validateConfig(c); (err == nil) != (variant == "valid") {
+			valid := variant == "valid" || variant == "triage-empty"
+			if err := r.validateConfig(c); (err == nil) != valid {
 				t.Fatalf("%s: %v", variant, err)
 			}
 		})

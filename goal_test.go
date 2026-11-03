@@ -671,3 +671,31 @@ func TestGoalReviewAllCollapsesReads(t *testing.T) {
 		t.Fatalf("expected one combined read per goal, got %d", reads)
 	}
 }
+
+func TestGoalRequiresTriageState(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	fixtureBinaries(t, root)
+	api := &linearFixture{issue: testIssue()}
+	r := newFixtureRunner(t, root, source, api)
+	c := testConfig(source)
+	c.Engine = "codex"
+	model := "test/model"
+	c.Model = &model
+	c.Projects[projectID].TriageStateID = ""
+	if err := writeJSON(filepath.Join(root, "config.json"), c); err != nil {
+		t.Fatal(err)
+	}
+	err := executeTest(r, "goal", "--project", projectID, "--prompt", "Diagnose N+1 queries")
+	if err == nil {
+		t.Fatal("goal without triage_state_id accepted")
+	}
+	if !strings.Contains(err.Error(), "triage_state_id is required") {
+		t.Fatal("unexpected error", err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.calls) != 0 {
+		t.Fatal("goal without triage should not contact Linear", api.calls)
+	}
+}

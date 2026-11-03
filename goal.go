@@ -451,6 +451,9 @@ func (r *runner) runGoal(c *config, project, promptText string, dryRun, autostar
 	if rt == nil {
 		return errors.New("goal requires a configured --project UUID")
 	}
+	if rt.TriageStateID == "" {
+		return errors.New("triage_state_id is required in the project route to create goal issues")
+	}
 	promptText = strings.TrimSpace(promptText)
 	if promptText == "" {
 		return errors.New("goal requires a --prompt or --prompt-file with content")
@@ -682,6 +685,9 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, viewer
 	rt := c.Projects[record.ProjectID]
 	if rt == nil {
 		return errors.New("recorded goal project is not configured")
+	}
+	if rt.TriageStateID == "" {
+		return errors.New("triage_state_id is required in the project route to review goal issues")
 	}
 	if viewer == "" {
 		viewer, err = r.viewer()

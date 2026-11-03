@@ -189,10 +189,14 @@ func (r *runner) validateConfig(c *config) error {
 		return errors.New("configure at least one project route")
 	}
 	for id, rt := range c.Projects {
-		if rt == nil || !uuidRE.MatchString(id) || !uuidRE.MatchString(rt.TeamID) || !uuidRE.MatchString(rt.ReadyStateID) || !uuidRE.MatchString(rt.TriageStateID) {
-			return errors.New("project/team/ready-state/triage-state IDs must be UUIDs")
+		if rt == nil || !uuidRE.MatchString(id) || !uuidRE.MatchString(rt.TeamID) || !uuidRE.MatchString(rt.ReadyStateID) {
+			return errors.New("project/team/ready-state IDs must be UUIDs")
 		}
-		if rt.TriageStateID == rt.ReadyStateID {
+		// triage_state_id is optional for implementation work; goals require it.
+		if rt.TriageStateID != "" && !uuidRE.MatchString(rt.TriageStateID) {
+			return errors.New("triage_state_id must be a UUID, or omitted")
+		}
+		if rt.TriageStateID != "" && rt.TriageStateID == rt.ReadyStateID {
 			return errors.New("triage_state_id must differ from ready_state_id")
 		}
 		if rt.BaseBranch != "staging" {

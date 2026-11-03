@@ -127,7 +127,9 @@ pauses the sweep. The scheduled `poll` job also runs this sweep after processing
 the issue queue, so goals with new feedback are reviewed automatically on the
 next tick; goal *creation* remains manual.
 
-Routes need a `triage_state_id` in addition to `team_id` and `ready_state_id`.
+Routes need a `triage_state_id` to use goals; it is optional for plain issue
+processing. A route without it still polls and implements ready issues, but
+`goal` and `goal review` require it and otherwise fail with a clear message.
 
 ## Configure later
 
