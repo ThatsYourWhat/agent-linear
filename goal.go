@@ -152,7 +152,7 @@ func goalTitle(prompt string) string {
 }
 
 func goalPrompt(goal string) string {
-	return fmt.Sprintf("Investigate the repository at the current directory to plan work toward this goal. Do not modify any files or create commits; this is read-only analysis.\n\nGoal: %s\n\nIdentify concrete problems and improvements that advance the goal, and break them into small, well-scoped Linear issues. Each issue must have a clear title and a description that states requirements and acceptance criteria.\n\nReturn only JSON matching this schema, with no markdown fences:\n%s\n", goal, asset("goal-plan.schema.json"))
+	return fmt.Sprintf("Investigate the repository at the current directory to plan work toward this goal. Do not modify any files or create commits; this is read-only analysis.\n\nGoal: %s\n\nIdentify concrete problems and improvements that advance the goal, and break them into small, well-scoped Linear issues. Each issue must have a clear title and a description that states requirements and acceptance criteria. Leave \"refinements\" and \"flags\" as empty arrays; they are used only when reviewing an existing goal.\n\nReturn only JSON matching this schema, with no markdown fences:\n%s\n", goal, asset("goal-plan.schema.json"))
 }
 
 func printGoalPlan(out io.Writer, plan map[string]any) {

@@ -1,7 +1,7 @@
 {
   "type": "object",
   "additionalProperties": false,
-  "required": ["findings", "issues", "follow_up_questions"],
+  "required": ["findings", "issues", "refinements", "flags", "follow_up_questions"],
   "properties": {
     "findings": {
       "type": "array",
@@ -19,7 +19,7 @@
       "type": "array",
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["title", "description", "priority"],
+        "required": ["title", "description", "priority", "labels"],
         "properties": {
           "title": {"type": "string"},
           "description": {"type": "string"},
@@ -32,7 +32,7 @@
       "type": "array",
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["issue"],
+        "required": ["issue", "title", "description"],
         "properties": {
           "issue": {"type": "string"},
           "title": {"type": "string"},
@@ -54,3 +54,4 @@
     "follow_up_questions": {"type": "array", "items": {"type": "string"}}
   }
 }
+

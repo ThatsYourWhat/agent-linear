@@ -19,6 +19,8 @@ func goalTestPlan() map[string]any {
 		"issues": []any{
 			map[string]any{"title": "Fix N+1 queries", "description": "Load related records in bulk.\n\nAcceptance: no per-row queries.", "priority": "high", "labels": []any{}},
 		},
+		"refinements":         []any{},
+		"flags":               []any{},
 		"follow_up_questions": []any{},
 	}
 }
@@ -697,5 +699,40 @@ func TestGoalRequiresTriageState(t *testing.T) {
 	defer api.mu.Unlock()
 	if len(api.calls) != 0 {
 		t.Fatal("goal without triage should not contact Linear", api.calls)
+	}
+}
+
+func TestGoalPlanSchemaFullyRequired(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal([]byte(asset("goal-plan.schema.json")), &schema); err != nil {
+		t.Fatal(err)
+	}
+	checkFullyRequired(t, schema, "$")
+}
+
+func checkFullyRequired(t *testing.T, node map[string]any, path string) {
+	t.Helper()
+	props, _ := node["properties"].(map[string]any)
+	if props == nil {
+		return
+	}
+	required := map[string]bool{}
+	if list, ok := node["required"].([]any); ok {
+		for _, k := range list {
+			required[k.(string)] = true
+		}
+	}
+	for key, value := range props {
+		if !required[key] {
+			t.Fatalf("%s.properties.%q must be in required (Codex output schema constraint)", path, key)
+		}
+		child, _ := value.(map[string]any)
+		if child == nil {
+			continue
+		}
+		checkFullyRequired(t, child, path+"."+key)
+		if items, ok := child["items"].(map[string]any); ok {
+			checkFullyRequired(t, items, path+"."+key+"[]")
+		}
 	}
 }
