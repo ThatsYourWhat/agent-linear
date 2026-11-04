@@ -125,6 +125,23 @@ func archiveResolvedErrors(folder string) error {
 	return nil
 }
 
+// resolveIssueID maps an issue reference to its Linear UUID. A reference may
+// already be a UUID, or it may be a human identifier such as "INT-3" resolved
+// through the Linear API.
+func (r *runner) resolveIssueID(ref string) (string, error) {
+	if ref == "" {
+		return "", errors.New("--issue is required")
+	}
+	if uuidRE.MatchString(ref) {
+		return ref, nil
+	}
+	issue, err := r.issue(ref)
+	if err != nil {
+		return "", err
+	}
+	return textAt(issue, "id"), nil
+}
+
 func loadRecovery(c *config, id, runs string, db *sql.DB) (runContext, error) {
 	var saved runContext
 	if !uuidRE.MatchString(id) {
@@ -160,6 +177,11 @@ func loadRecovery(c *config, id, runs string, db *sql.DB) (runContext, error) {
 }
 
 func (r *runner) reconcile(c *config, id, runs string, db *sql.DB) error {
+	resolved, err := r.resolveIssueID(id)
+	if err != nil {
+		return err
+	}
+	id = resolved
 	if err := stopProviderRecovery(db, id, "Manual reconciliation requested; inspect retained result and logs before further recovery"); err != nil {
 		return err
 	}

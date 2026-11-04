@@ -716,7 +716,7 @@ branch/PR first. Continue implementation with managed resume as described below.
 When only verification remains, explicitly verify and finish the recorded run:
 
 ```bash
-./agent-linear reconcile --issue ISSUE_UUID
+./agent-linear reconcile --issue ISSUE_UUID_OR_IDENTIFIER
 ```
 
 The command takes the worker lock, refuses processes still using the checkout,
@@ -774,7 +774,7 @@ hand-editing the state database to clear a stuck claim.
 To continue implementation as the original owner while still assigned:
 
 ```bash
-./agent-linear resume --issue ISSUE_UUID
+./agent-linear resume --issue ISSUE_UUID_OR_IDENTIFIER
 ```
 
 Run this outside the feature checkout and close shells using that checkout first.

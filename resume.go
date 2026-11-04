@@ -12,6 +12,11 @@ import (
 )
 
 func (r *runner) resume(c *config, id, runs string, db *sql.DB, lock *os.File) (runErr error) {
+	resolved, err := r.resolveIssueID(id)
+	if err != nil {
+		return err
+	}
+	id = resolved
 	// Consume automatic eligibility before validation or any external action.
 	if err := stopProviderRecovery(db, id, "Resume interrupted or failed; inspect retained checkout and logs before manual resume/reconcile"); err != nil {
 		return err

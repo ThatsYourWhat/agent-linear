@@ -225,7 +225,7 @@ func (r *runner) cli() *cobra.Command {
 			cmd.Flags().StringVar(&issueRef, "issue", "", "Issue identifier or UUID to reset")
 		}
 		if name == "reconcile" || name == "resume" {
-			cmd.Flags().StringVar(&issueRef, "issue", "", "Recorded issue UUID")
+			cmd.Flags().StringVar(&issueRef, "issue", "", "Issue identifier or UUID of the recorded run")
 		}
 		cmd.PreRun = func(cmd *cobra.Command, args []string) { r.ctx = cmd.Context() }
 		root.AddCommand(cmd)
