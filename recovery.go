@@ -161,9 +161,19 @@ func loadRecovery(c *config, id, runs string, db *sql.DB) (runContext, error) {
 		return saved, err
 	}
 	expected := filepath.Join(runs, id)
-	if saved.Route == nil || !reflect.DeepEqual(saved.Route, c.Projects[saved.ProjectID]) || saved.Scratch != expected || folder != expected || saved.Checkout != filepath.Join(expected, "repo") || textAt(saved.Issue, "id") != id || saved.Owner == "" || saved.ProgressState == "" || saved.ReviewState == "" || !reflect.DeepEqual(saved.Requirements, issueRequirements(saved.Issue)) {
+	current := c.Projects[saved.ProjectID]
+	if saved.Route == nil || current == nil {
 		return saved, errors.New("saved run does not match the configured route and original context")
 	}
+	// The skip_ci_checks toggle may change after launch without invalidating the
+	// run; compare route identity ignoring it, then honor the current value.
+	savedRoute := *saved.Route
+	currentRoute := *current
+	savedRoute.SkipCIChecks = currentRoute.SkipCIChecks
+	if !reflect.DeepEqual(savedRoute, currentRoute) || saved.Scratch != expected || folder != expected || saved.Checkout != filepath.Join(expected, "repo") || textAt(saved.Issue, "id") != id || saved.Owner == "" || saved.ProgressState == "" || saved.ReviewState == "" || !reflect.DeepEqual(saved.Requirements, issueRequirements(saved.Issue)) {
+		return saved, errors.New("saved run does not match the configured route and original context")
+	}
+	saved.Route.SkipCIChecks = currentRoute.SkipCIChecks
 	for _, path := range []string{saved.Scratch, saved.Checkout} {
 		actual, err := filepath.EvalSymlinks(path)
 		if err != nil || actual != path {
