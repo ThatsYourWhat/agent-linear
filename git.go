@@ -220,6 +220,9 @@ func (r *runner) verifyPR(report map[string]any, rt *route, repo, branch, base, 
 	if !draftOK || !crossOK || textAt(pr, "url") != textAt(report, "pr_url") || textAt(pr, "state") != "OPEN" || draft || textAt(pr, "baseRefName") != "staging" || textAt(pr, "headRefName") != branch || textAt(pr, "headRefOid") != textAt(report, "commit_sha") || crossRepository {
 		return fmt.Errorf("GitHub PR does not match verified branch/base/SHA or is not ready")
 	}
+	if rt.SkipCIChecks {
+		return nil
+	}
 	raw, err = r.command(repo, gh, "pr", "checks", textAt(report, "pr_url"), "--repo", rt.GitHubRepo, "--required", "--json", "name,bucket")
 	if err != nil {
 		return fmt.Errorf("required CI checks could not be confirmed: %w", err)

@@ -602,7 +602,9 @@ PR head; pending, missing, failed, cancelled and unreadable checks prevent ready
 The PR head is checked again afterwards, and `ci-checks.json` retains evidence.
 Repositories must configure at least one named required status check on staging;
 an empty or inaccessible policy is not treated as passing. The agent must never
-change protection or rulesets to bypass this gate. These reads follow
+change protection or rulesets to bypass this gate. Set `skip_ci_checks: true` on
+a route to disable this gate for repositories that do not run required CI; the
+PR is then accepted without a required status check. These reads follow
 [GitHub's required-check CLI](https://cli.github.com/manual/gh_pr_checks) and
 [effective branch rules API](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch).
 

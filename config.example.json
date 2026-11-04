@@ -15,6 +15,7 @@
       "github_repo": "OWNER/REPO",
       "base_branch": "staging",
       "require_signed_commits": true,
+      "skip_ci_checks": false,
       "deployment": {
         "mode": "pr-only",
         "environment": "none",

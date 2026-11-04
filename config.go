@@ -32,6 +32,7 @@ type route struct {
 	GitHubRepo           string `json:"github_repo"`
 	BaseBranch           string `json:"base_branch"`
 	RequireSignedCommits bool   `json:"require_signed_commits"`
+	SkipCIChecks         bool   `json:"skip_ci_checks"`
 	Deployment           struct {
 		Mode         string `json:"mode"`
 		Environment  string `json:"environment"`
