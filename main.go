@@ -185,6 +185,7 @@ func (r *runner) cli() *cobra.Command {
 		{"smoke-test", "Check CLI, repository, signing-profile and Linear read access"},
 		{"poll", "Process the eligible Linear queue serially"},
 		{"run", "Run one issue by identifier or UUID"},
+		{"reset", "Reset a claimed issue to ready and clear its local run state"},
 		{"resume", "Continue one recorded session as its assigned owner"},
 		{"reconcile", "Verify and finish one recorded run without relaunching work"},
 		{"status", "Print health and the five most recently started issues"},
@@ -208,7 +209,7 @@ func (r *runner) cli() *cobra.Command {
 			return r.execute(cmd.Name(), path, issueRef, dryRun, setup, all)
 		}}
 		switch name {
-		case "poll", "run":
+		case "poll", "run", "reset":
 			cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Read eligible/claimed issues without starting work")
 		case "install-cron":
 			cmd.Flags().BoolVar(&setup, "setup", false, "Collect project routes before installing cron")
@@ -219,6 +220,9 @@ func (r *runner) cli() *cobra.Command {
 		}
 		if name == "run" {
 			cmd.Flags().StringVar(&issueRef, "issue", "", "Issue identifier or UUID to fetch and run")
+		}
+		if name == "reset" {
+			cmd.Flags().StringVar(&issueRef, "issue", "", "Issue identifier or UUID to reset")
 		}
 		if name == "reconcile" || name == "resume" {
 			cmd.Flags().StringVar(&issueRef, "issue", "", "Recorded issue UUID")
@@ -303,7 +307,7 @@ func (r *runner) execute(action, configPath, issueRef string, dryRun, setup, all
 	defer lock.Close()
 	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			if action == "reconcile" || action == "resume" || action == "prune-sessions" {
+			if action == "reconcile" || action == "resume" || action == "prune-sessions" || action == "reset" {
 				return errors.New("worker still active; recovery refused")
 			}
 			fmt.Fprintln(r.out, "Worker already active; skipping this tick")
@@ -343,6 +347,9 @@ func (r *runner) execute(action, configPath, issueRef string, dryRun, setup, all
 	}
 	if action == "prune-sessions" {
 		return r.pruneSessions(c, runs, db, dryRun)
+	}
+	if action == "reset" {
+		return r.resetIssue(c, issueRef, runs, db, dryRun)
 	}
 	if action == "poll" && !dryRun {
 		pollPhase = "provider recovery"

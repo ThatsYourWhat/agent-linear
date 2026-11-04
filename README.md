@@ -755,6 +755,22 @@ that capture, require manual inspection; the command does not invent a snapshot.
 Existing claims remain preserved. Deleting state to force retries can duplicate
 external work.
 
+To abandon a stuck run and start the issue over from scratch:
+
+```bash
+./agent-linear reset --issue INT-3
+./agent-linear reset --issue INT-3 --dry-run
+```
+
+`reset` moves the issue back to the ready state, clears its local claim, recovery
+context and provider-recovery rows, and removes the `.runs/ISSUE_UUID/` directory,
+so the next poll picks it up fresh. It accepts an identifier or a UUID. It refuses
+to run when a pull request was recorded or a remote feature branch still exists,
+so it cannot duplicate external work; it also refuses when the issue is assigned
+to another user or the worker lock is held. `--dry-run` previews the action without
+mutating Linear or local state. This is the deliberate, safe alternative to
+hand-editing the state database to clear a stuck claim.
+
 To continue implementation as the original owner while still assigned:
 
 ```bash

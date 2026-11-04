@@ -681,6 +681,9 @@ func newFixtureRunner(t *testing.T, root, source string, api *linearFixture) *ru
 		if slices.Equal(args, []string{"git", "ls-remote", "--exit-code", "origin", "refs/heads/staging"}) {
 			return command(dir, "git", "ls-remote", "--exit-code", source, "refs/heads/staging")
 		}
+		if len(args) == 4 && args[0] == "git" && args[1] == "ls-remote" && args[2] == "origin" {
+			return "", nil // fixture: no remote feature branches
+		}
 		return command(dir, args...)
 	}
 	return r
