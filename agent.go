@@ -249,7 +249,7 @@ func (r *runner) launchAgent(c *config, repo, folder, prompt string, env, lesson
 		return nil, err
 	}
 	if engine == "codex" {
-		args = []string{"-a", "never", "exec", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", "--cd", repo, "--add-dir", folder, "--json", "--output-schema", schemaPath, "--output-last-message", filepath.Join(folder, "result.json")}
+		args = []string{"-a", "never", "exec", "--sandbox", "workspace-write", "-c", "sandbox_workspace_write.network_access=true", "--cd", folder, "--json", "--output-schema", schemaPath, "--output-last-message", filepath.Join(folder, "result.json")}
 	} else {
 		external := map[string]string{"*": "deny", folder + "/**": "allow"}
 		for _, path := range lessons {
