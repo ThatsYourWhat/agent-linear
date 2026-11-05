@@ -383,6 +383,14 @@ func githubFixture(root string) int {
 		fmt.Println(`{"viewerPermission":"WRITE"}`)
 		return 0
 	}
+	if strings.Contains(args, "pr view") && strings.Contains(args, "mergedAt") {
+		if exists(filepath.Join(root, "pr-merged")) {
+			fmt.Println("true")
+		} else {
+			fmt.Println("false")
+		}
+		return 0
+	}
 	if !strings.HasPrefix(args, "pr view") {
 		return 1
 	}
@@ -486,6 +494,7 @@ type linearFixture struct {
 	createCount int
 	children    []map[string]any
 	comments    map[string][]map[string]any
+	relations   []map[string]string
 }
 
 func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
@@ -639,6 +648,12 @@ func (f *linearFixture) handler(w http.ResponseWriter, req *http.Request) {
 			nodes = append(nodes, map[string]any{"id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "name": name})
 		}
 		data = map[string]any{"issueLabels": map[string]any{"nodes": nodes}}
+	case strings.Contains(call.Query, "issueRelationCreate("):
+		blocker := textAt(call.Variables, "input", "issueId")
+		dependent := textAt(call.Variables, "input", "relatedIssueId")
+		typ := textAt(call.Variables, "input", "type")
+		f.relations = append(f.relations, map[string]string{"blocker": blocker, "dependent": dependent, "type": typ})
+		data = map[string]any{"issueRelationCreate": map[string]any{"success": true, "issueRelation": map[string]any{"id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "type": typ, "issue": map[string]any{"id": blocker}, "relatedIssue": map[string]any{"id": dependent}}}}
 	case strings.Contains(call.Query, "issueCreate("):
 		f.createCount++
 		id := fmt.Sprintf("aaaaaaaa-aaaa-4aaa-8aaa-%012x", f.createCount)

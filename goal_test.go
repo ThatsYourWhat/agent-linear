@@ -17,7 +17,7 @@ func goalTestPlan() map[string]any {
 	return map[string]any{
 		"findings": []any{map[string]any{"severity": "high", "summary": "N+1 queries", "evidence": "app.txt"}},
 		"issues": []any{
-			map[string]any{"title": "Fix N+1 queries", "description": "Load related records in bulk.\n\nAcceptance: no per-row queries.", "priority": "high", "labels": []any{}},
+			map[string]any{"title": "Fix N+1 queries", "description": "Load related records in bulk.\n\nAcceptance: no per-row queries.", "priority": "high", "labels": []any{}, "depends_on": []any{}},
 		},
 		"refinements":         []any{},
 		"flags":               []any{},
@@ -29,16 +29,42 @@ func reviewTestPlan() map[string]any {
 	return map[string]any{
 		"findings": []any{},
 		"issues": []any{
-			map[string]any{"title": "Add rate limiting", "description": "Limit requests per window.\n\nAcceptance: 429 when exceeded.", "priority": "medium", "labels": []any{}},
+			map[string]any{"title": "Add rate limiting", "description": "Limit requests per window.\n\nAcceptance: 429 when exceeded.", "priority": "medium", "labels": []any{}, "depends_on": []any{}},
 		},
 		"refinements": []any{
-			map[string]any{"issue": "APP-1", "title": "", "description": "Scope down to reads only."},
+			map[string]any{"issue": "APP-1", "title": "", "description": "Scope down to reads only.", "depends_on": []any{}},
 		},
 		"flags": []any{
 			map[string]any{"issue": "APP-2", "reason": "superseded"},
 		},
 		"follow_up_questions": []any{},
 	}
+}
+
+// dependencyPlan builds a plan whose issues/refinements declare prerequisites,
+// used to exercise the blocks-relation wiring.
+func dependencyPlan(review bool) map[string]any {
+	base := map[string]any{
+		"findings":            []any{},
+		"refinements":         []any{},
+		"flags":               []any{},
+		"follow_up_questions": []any{},
+	}
+	if review {
+		base["issues"] = []any{
+			map[string]any{"title": "Add rate limiting", "description": "Limit requests per window.", "priority": "medium", "labels": []any{}, "depends_on": []any{"Fix N+1 queries"}},
+		}
+		base["refinements"] = []any{
+			map[string]any{"issue": "APP-1", "title": "", "description": "Scope down to reads only.", "depends_on": []any{"Add caching"}},
+		}
+		return base
+	}
+	base["findings"] = []any{map[string]any{"severity": "high", "summary": "N+1 queries", "evidence": "app.txt"}}
+	base["issues"] = []any{
+		map[string]any{"title": "Fix N+1 queries", "description": "Load related records in bulk.", "priority": "high", "labels": []any{}, "depends_on": []any{}},
+		map[string]any{"title": "Add caching", "description": "Cache repeated reads.", "priority": "medium", "labels": []any{}, "depends_on": []any{"Fix N+1 queries"}},
+	}
+	return base
 }
 
 func goalAgentFixture(root, engine, prompt string) int {
@@ -86,6 +112,8 @@ func goalAgentFixture(root, engine, prompt string) int {
 	case "invalid-plan":
 		delete(plan, "issues")
 		data, _ = json.Marshal(plan)
+	case "deps":
+		data, _ = json.Marshal(dependencyPlan(review))
 	default:
 		data, _ = json.Marshal(plan)
 	}
@@ -734,5 +762,94 @@ func checkFullyRequired(t *testing.T, node map[string]any, path string) {
 		if items, ok := child["items"].(map[string]any); ok {
 			checkFullyRequired(t, items, path+"."+key+"[]")
 		}
+	}
+}
+
+func TestGoalCreatesDependencies(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	fixtureBinaries(t, root)
+	api := &linearFixture{issue: testIssue()}
+	r := newFixtureRunner(t, root, source, api)
+	writeGoalConfig(t, root, source, "codex")
+	mustWrite(t, filepath.Join(root, "outcome"), "deps")
+	if err := executeTest(r, "goal", "--project", projectID, "--prompt", "Diagnose N+1 queries"); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.relations) != 1 {
+		t.Fatalf("expected 1 relation, got %d: %v", len(api.relations), api.relations)
+	}
+	rel := api.relations[0]
+	if rel["type"] != "blocks" || rel["blocker"] != "aaaaaaaa-aaaa-4aaa-8aaa-000000000002" || rel["dependent"] != "aaaaaaaa-aaaa-4aaa-8aaa-000000000003" {
+		t.Fatalf("wrong relation: %v", rel)
+	}
+}
+
+func TestGoalReviewCreatesDependencies(t *testing.T) {
+	root := t.TempDir()
+	source := testRepo(t, root)
+	r, api, db := setupGoalReview(t, root, source, "codex")
+	defer db.Close()
+	mustWrite(t, filepath.Join(root, "outcome"), "deps")
+	if err := executeTest(r, "goal", "review", "--goal", reviewGoalID); err != nil {
+		t.Fatal(err)
+	}
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.relations) != 2 {
+		t.Fatalf("expected 2 relations, got %d: %v", len(api.relations), api.relations)
+	}
+	byDependent := map[string]string{}
+	for _, rel := range api.relations {
+		if rel["type"] != "blocks" {
+			t.Fatalf("expected blocks relation, got %v", rel)
+		}
+		byDependent[rel["dependent"]] = rel["blocker"]
+	}
+	if byDependent["aaaaaaaa-aaaa-4aaa-8aaa-000000000001"] != reviewChild1ID {
+		t.Fatalf("follow-up must be blocked by APP-1: %v", api.relations)
+	}
+	if byDependent[reviewChild1ID] != reviewChild2ID {
+		t.Fatalf("APP-1 refinement must be blocked by APP-2: %v", api.relations)
+	}
+}
+
+func TestGoalPlanRejectsCircularDependencies(t *testing.T) {
+	newPlan := func(issues []map[string]any) map[string]any {
+		raw := make([]any, 0, len(issues))
+		for _, issue := range issues {
+			raw = append(raw, issue)
+		}
+		return map[string]any{
+			"findings":            []any{},
+			"issues":              raw,
+			"refinements":         []any{},
+			"flags":               []any{},
+			"follow_up_questions": []any{},
+		}
+	}
+	issue := func(title string, deps ...string) map[string]any {
+		d := make([]any, 0, len(deps))
+		for _, x := range deps {
+			d = append(d, x)
+		}
+		return map[string]any{"title": title, "description": "desc", "priority": "medium", "labels": []any{}, "depends_on": d}
+	}
+	cases := map[string]map[string]any{
+		"self":     newPlan([]map[string]any{issue("A", "A")}),
+		"forward":  newPlan([]map[string]any{issue("A", "B"), issue("B")}),
+		"circular": newPlan([]map[string]any{issue("A", "B"), issue("B", "A")}),
+	}
+	for name, plan := range cases {
+		t.Run(name, func(t *testing.T) {
+			if err := validateGoalPlan(plan); err == nil {
+				t.Fatalf("plan with %s dependency accepted", name)
+			}
+		})
+	}
+	if err := validateGoalPlan(newPlan([]map[string]any{issue("A"), issue("B", "A")})); err != nil {
+		t.Fatalf("valid backward dependency rejected: %v", err)
 	}
 }

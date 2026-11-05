@@ -19,12 +19,13 @@
       "type": "array",
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["title", "description", "priority", "labels"],
+        "required": ["title", "description", "priority", "labels", "depends_on"],
         "properties": {
           "title": {"type": "string"},
           "description": {"type": "string"},
           "priority": {"type": "string", "enum": ["urgent", "high", "medium", "low"]},
-          "labels": {"type": "array", "items": {"type": "string"}}
+          "labels": {"type": "array", "items": {"type": "string"}},
+          "depends_on": {"type": "array", "items": {"type": "string"}}
         }
       }
     },
@@ -32,11 +33,12 @@
       "type": "array",
       "items": {
         "type": "object", "additionalProperties": false,
-        "required": ["issue", "title", "description"],
+        "required": ["issue", "title", "description", "depends_on"],
         "properties": {
           "issue": {"type": "string"},
           "title": {"type": "string"},
-          "description": {"type": "string"}
+          "description": {"type": "string"},
+          "depends_on": {"type": "array", "items": {"type": "string"}}
         }
       }
     },

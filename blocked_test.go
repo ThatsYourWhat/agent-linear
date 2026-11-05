@@ -1,10 +1,14 @@
 package main
 
 import (
+	"database/sql"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+// blockerID is the Linear id of the blocking issue used in blockedIssue.
+const blockerID = "abababab-abab-4bab-8bab-abababababab"
 
 // blockedIssue returns a ready issue with one incoming "blocks" relation whose
 // blocker is in the given workflow state type.
@@ -15,6 +19,7 @@ func blockedIssue(blockerState string) map[string]any {
 			map[string]any{
 				"type": "blocks",
 				"issue": map[string]any{
+					"id":         blockerID,
 					"identifier": "APP-0",
 					"state":      map[string]any{"type": blockerState},
 				},
@@ -89,4 +94,67 @@ func TestUnblockedIssueIsWorked(t *testing.T) {
 	if seen, err := claimedStatus(db, issueID); err != nil || seen != "ready" {
 		t.Fatalf("unblocked issue was not worked: %q %v", seen, err)
 	}
+}
+
+func TestOpenBlockers(t *testing.T) {
+	newDB := func(t *testing.T) *sql.DB {
+		t.Helper()
+		db, err := openState(filepath.Join(t.TempDir(), "state.sqlite3"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return db
+	}
+	runnerWithGH := func(t *testing.T, merged string) *runner {
+		t.Helper()
+		r := newRunner("agent-linear")
+		r.command = func(dir string, args ...string) (string, error) { return merged, nil }
+		return r
+	}
+
+	t.Run("open blocker", func(t *testing.T) {
+		db := newDB(t)
+		defer db.Close()
+		r := runnerWithGH(t, "false")
+		blockers, err := r.openBlockers(db, blockedIssue("started"))
+		if err != nil || len(blockers) != 1 || blockers[0] != "APP-0" {
+			t.Fatalf("expected one open blocker, got %v %v", blockers, err)
+		}
+	})
+
+	t.Run("terminal with unmerged PR", func(t *testing.T) {
+		db := newDB(t)
+		defer db.Close()
+		if _, err := db.Exec("INSERT INTO runs VALUES (?,?,?,?,?)", blockerID, "APP-0", "ready", "/scratch", prURL); err != nil {
+			t.Fatal(err)
+		}
+		r := runnerWithGH(t, "false")
+		blockers, err := r.openBlockers(db, blockedIssue("completed"))
+		if err != nil || len(blockers) != 1 || blockers[0] != "APP-0" {
+			t.Fatalf("expected one blocking PR, got %v %v", blockers, err)
+		}
+	})
+
+	t.Run("terminal with merged PR", func(t *testing.T) {
+		db := newDB(t)
+		defer db.Close()
+		if _, err := db.Exec("INSERT INTO runs VALUES (?,?,?,?,?)", blockerID, "APP-0", "ready", "/scratch", prURL); err != nil {
+			t.Fatal(err)
+		}
+		r := runnerWithGH(t, "true")
+		blockers, err := r.openBlockers(db, blockedIssue("completed"))
+		if err != nil || len(blockers) != 0 {
+			t.Fatalf("expected no blockers, got %v %v", blockers, err)
+		}
+	})
+
+	t.Run("terminal with no PR", func(t *testing.T) {
+		db := newDB(t)
+		defer db.Close()
+		r := runnerWithGH(t, "false")
+		blockers, err := r.openBlockers(db, blockedIssue("completed"))
+		if err != nil || len(blockers) != 0 {
+			t.Fatalf("expected no blockers (no recorded PR), got %v %v", blockers, err)
+		}
+	})
 }

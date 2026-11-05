@@ -88,6 +88,17 @@ the next cron tick picks them up without approval. `--dry-run` prints the plan
 without any Linear writes. Re-running the same prompt for the same project is
 detected and skipped rather than creating duplicate goals.
 
+A planned issue can declare prerequisites with `depends_on` (a list of the
+titles of issues that must finish first). The runner writes a Linear `blocks`
+relation from each prerequisite to the dependent issue, so the dependent is
+marked blocked until each prerequisite's pull request is merged into `staging`
+(or reaches a terminal state when it has no pull request); the ready-queue gate
+then skips it until then. `depends_on` applies to issues created at goal time
+and to follow-ups and refinements applied during `goal review`; an empty array
+means no prerequisites. Dependencies must only point at earlier issues — a plan
+that depends on a later issue, on itself, or that forms a cycle is rejected
+before anything is written, so background processing can never deadlock.
+
 ### Feedback loop
 
 `goal review` reads a goal, its sub-issues, and their comments, then turns team
@@ -187,10 +198,12 @@ eligible issues, including existing ones, rather than a creation-time cutoff.
 
 An issue that is `blocked by` another issue is skipped until it is unblocked:
 a ready issue with an active Linear "blocks" relation against it is not claimed,
-commented on, or changed, and no agent session or provider request starts. Once
-every blocker reaches a terminal workflow state (`Done`, `Canceled`, or
-`Duplicate`), the block resolves and the issue is picked up on a later tick with
-no manual reset. This gate is always on for every route.
+commented on, or changed, and no agent session or provider request starts. A
+blocker resolves once its pull request is merged into `staging`; when the
+blocker has no recorded pull request, its terminal workflow state (`Done`,
+`Canceled`, or `Duplicate`) resolves the block instead. The issue is then picked
+up on a later tick with no manual reset. This gate is always on for every route,
+and checking it adds no extra Linear requests.
 
 Supply the Linear API key through the local `LINEAR_API_KEY` environment variable.
 The runner does not load credential files. Credentials are not stored in config,

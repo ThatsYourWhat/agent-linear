@@ -68,6 +68,37 @@ func validateGoalPlan(plan map[string]any) error {
 			return fmt.Errorf("goal plan flag %d needs an issue and a reason", i+1)
 		}
 	}
+	// Reject dependencies that point forward, at the issue itself, or (for a
+	// refinement) at a new follow-up. Goal issues may only depend on issues
+	// that already exist, so the dependency graph stays acyclic: an issue must
+	// never require something from a future issue, and A requiring B while B
+	// requires A is impossible.
+	titleIndex := map[string]int{}
+	for i, item := range planIssues(plan) {
+		if title := textAt(item, "title"); title != "" {
+			if _, exists := titleIndex[title]; !exists {
+				titleIndex[title] = i
+			}
+		}
+	}
+	for i, item := range planIssues(plan) {
+		for _, dep := range planDependsOn(item) {
+			dep = strings.TrimSpace(dep)
+			if dep == "" {
+				continue
+			}
+			if idx, ok := titleIndex[dep]; ok && idx >= i {
+				return fmt.Errorf("goal issue %d must not depend on itself or a later issue (%q)", i+1, dep)
+			}
+		}
+	}
+	for i, item := range planRefinements(plan) {
+		for _, dep := range planDependsOn(item) {
+			if _, ok := titleIndex[strings.TrimSpace(dep)]; ok {
+				return fmt.Errorf("goal refinement %d must not depend on a new issue (%q)", i+1, dep)
+			}
+		}
+	}
 	return nil
 }
 
@@ -106,6 +137,19 @@ func planLabels(issue any) []string {
 	labels, _ := issue.(map[string]any)["labels"].([]any)
 	for _, label := range labels {
 		if s, ok := label.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// planDependsOn returns the titles of the issues a plan item declares as
+// prerequisites. An empty list means the issue is not blocked.
+func planDependsOn(item any) []string {
+	var out []string
+	depends, _ := item.(map[string]any)["depends_on"].([]any)
+	for _, d := range depends {
+		if s, ok := d.(string); ok {
 			out = append(out, s)
 		}
 	}
@@ -152,7 +196,7 @@ func goalTitle(prompt string) string {
 }
 
 func goalPrompt(goal string) string {
-	return fmt.Sprintf("Investigate the repository at the current directory to plan work toward this goal. Do not modify any files or create commits; this is read-only analysis.\n\nGoal: %s\n\nIdentify concrete problems and improvements that advance the goal, and break them into small, well-scoped Linear issues. Each issue must have a clear title and a description that states requirements and acceptance criteria. Leave \"refinements\" and \"flags\" as empty arrays; they are used only when reviewing an existing goal.\n\nReturn only JSON matching this schema, with no markdown fences:\n%s\n", goal, asset("goal-plan.schema.json"))
+	return fmt.Sprintf("Investigate the repository at the current directory to plan work toward this goal. Do not modify any files or create commits; this is read-only analysis.\n\nGoal: %s\n\nIdentify concrete problems and improvements that advance the goal, and break them into small, well-scoped Linear issues. Each issue must have a clear title and a description that states requirements and acceptance criteria. List issues in dependency order: set each issue's \"depends_on\" to the titles of the issues that must be completed before it can begin, or an empty array if it has none. Never depend on a later issue or create circular dependencies. Leave \"refinements\" and \"flags\" as empty arrays; they are used only when reviewing an existing goal.\n\nReturn only JSON matching this schema, with no markdown fences:\n%s\n", goal, asset("goal-plan.schema.json"))
 }
 
 func printGoalPlan(out io.Writer, plan map[string]any) {
@@ -295,6 +339,48 @@ func (r *runner) createIssue(input map[string]any, folder, stage string) (map[st
 	}
 	issue, _ := data.Create["issue"].(map[string]any)
 	return issue, nil
+}
+
+// createRelation records a "blocks" relation so blockerID blocks dependentID.
+// Linear stores "X is blocked by Y" as a directional "blocks" edge from Y to X.
+func (r *runner) createRelation(blockerID, dependentID, folder, stage string) error {
+	variables := map[string]any{"input": map[string]any{"issueId": blockerID, "relatedIssueId": dependentID, "type": "blocks"}}
+	if err := writeJSON(filepath.Join(folder, stage+"-relation-request.json"), variables); err != nil {
+		return err
+	}
+	var data struct {
+		Create map[string]any `json:"issueRelationCreate"`
+	}
+	err := r.graphql(`mutation GoalRelationCreate($input: IssueRelationCreateInput!) { issueRelationCreate(input: $input) { success issueRelation { id type issue { id } relatedIssue { id } } } }`, variables, &data)
+	if err != nil {
+		return err
+	}
+	if !boolAt(data.Create, "success") || textAt(data.Create, "issueRelation", "type") != "blocks" || textAt(data.Create, "issueRelation", "issue", "id") != blockerID || textAt(data.Create, "issueRelation", "relatedIssue", "id") != dependentID {
+		return errors.New("Linear relation creation was not confirmed")
+	}
+	return writeJSON(filepath.Join(folder, stage+"-relation.json"), data.Create)
+}
+
+// linkDependencies creates a "blocks" relation from each prerequisite title to
+// the dependent issue, resolving titles against titleToID.
+func (r *runner) linkDependencies(dependentID string, prereqs []string, titleToID map[string]string, folder, stage string) error {
+	for i, title := range uniqueStrings(prereqs) {
+		title = strings.TrimSpace(title)
+		if title == "" {
+			continue
+		}
+		blockerID := titleToID[title]
+		if blockerID == "" {
+			return fmt.Errorf("goal dependency %q does not match any issue", title)
+		}
+		if blockerID == dependentID {
+			continue
+		}
+		if err := r.createRelation(blockerID, dependentID, folder, fmt.Sprintf("%s-%d", stage, i)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // labelIDs resolves Linear label UUIDs by name.
@@ -554,6 +640,20 @@ func (r *runner) runGoal(c *config, project, promptText string, dryRun, autostar
 		}
 		created = append(created, goalIssue{ID: textAt(child, "id"), Identifier: textAt(child, "identifier")})
 	}
+	titleToID := map[string]string{}
+	for i, item := range planIssues(plan) {
+		if i < len(created) {
+			titleToID[textAt(item, "title")] = created[i].ID
+		}
+	}
+	for i, item := range planIssues(plan) {
+		if i >= len(created) {
+			break
+		}
+		if err = r.linkDependencies(created[i].ID, planDependsOn(item), titleToID, folder, fmt.Sprintf("dep-child-%d", i+1)); err != nil {
+			return err
+		}
+	}
 	record := goalRecord{GoalID: goalID, ProjectID: project, Identifier: identifier, Prompt: promptText, Folder: folder, Status: "ready", Created: created, Fingerprint: fingerprint}
 	if err = saveGoal(db, record); err != nil {
 		return err
@@ -640,7 +740,7 @@ func reviewPrompt(goal string, feedback, children []map[string]any) string {
 	if len(feedback) == 0 {
 		b.WriteString("\nNo new stakeholder feedback.\n")
 	}
-	b.WriteString("\nProduce a plan with:\n- issues: new follow-up issues to create, each with a title and a description stating requirements and acceptance criteria.\n- refinements: edits to EXISTING issues (referenced by identifier), only when they are still in triage; give the new title and/or description.\n- flags: stale, duplicate or superseded issues to flag for a human to close.\n\nReturn only JSON matching this schema, with no markdown fences:\n")
+	b.WriteString("\nProduce a plan with:\n- issues: new follow-up issues to create, each with a title and a description stating requirements and acceptance criteria.\n- refinements: edits to EXISTING issues (referenced by identifier), only when they are still in triage; give the new title and/or description.\n- flags: stale, duplicate or superseded issues to flag for a human to close.\nSet \"depends_on\" (on issues and refinements) to the titles of the issues that must be completed first, or an empty array if there are none. Never depend on a new follow-up or create circular dependencies.\n\nReturn only JSON matching this schema, with no markdown fences:\n")
 	b.WriteString(asset("goal-plan.schema.json"))
 	b.WriteString("\n")
 	return b.String()
@@ -752,6 +852,17 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, viewer
 			byIdentifier[identifier] = child
 		}
 	}
+	titleToID := map[string]string{}
+	for _, child := range children {
+		if title := textAt(child, "title"); title != "" {
+			titleToID[title] = textAt(child, "id")
+		}
+	}
+	type dependency struct {
+		dependent string
+		prereqs   []string
+	}
+	var dependencies []dependency
 	labelNames := []string{}
 	for _, item := range planIssues(plan) {
 		labelNames = append(labelNames, planLabels(item)...)
@@ -781,6 +892,8 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, viewer
 			return err
 		}
 		created = append(created, goalIssue{ID: textAt(child, "id"), Identifier: textAt(child, "identifier")})
+		titleToID[textAt(item, "title")] = textAt(child, "id")
+		dependencies = append(dependencies, dependency{dependent: textAt(child, "id"), prereqs: planDependsOn(item)})
 	}
 	for i, item := range planRefinements(plan) {
 		identifier := textAt(item, "issue")
@@ -794,6 +907,7 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, viewer
 				return err
 			}
 			refined = append(refined, identifier)
+			dependencies = append(dependencies, dependency{dependent: textAt(child, "id"), prereqs: planDependsOn(item)})
 		} else {
 			// Started/completed work has frozen requirements: express the refinement as a follow-up.
 			title := textAt(item, "title")
@@ -811,10 +925,17 @@ func (r *runner) reviewGoal(c *config, goalID string, dryRun, sweep bool, viewer
 				return err
 			}
 			created = append(created, goalIssue{ID: textAt(child, "id"), Identifier: textAt(child, "identifier")})
+			titleToID[title] = textAt(child, "id")
+			dependencies = append(dependencies, dependency{dependent: textAt(child, "id"), prereqs: planDependsOn(item)})
 		}
 	}
 	for _, item := range planFlags(plan) {
 		flagged = append(flagged, fmt.Sprintf("%s: %s", textAt(item, "issue"), textAt(item, "reason")))
+	}
+	for i, dep := range dependencies {
+		if err = r.linkDependencies(dep.dependent, dep.prereqs, titleToID, record.Folder, fmt.Sprintf("dep-%d", i+1)); err != nil {
+			return err
+		}
 	}
 	record.Created = append(record.Created, created...)
 	if err = saveGoal(db, record); err != nil {

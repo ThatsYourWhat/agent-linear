@@ -29,7 +29,15 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 		return err
 	}
 	if current == nil {
-		fmt.Fprintf(r.out, "%s: skipped; %s\n", identifier, skipReason(issue, "not ready or assigned to another user"))
+		fmt.Fprintf(r.out, "%s: skipped; not ready or assigned to another user\n", identifier)
+		return nil
+	}
+	blockers, err := r.openBlockers(db, current)
+	if err != nil {
+		return err
+	}
+	if len(blockers) > 0 {
+		fmt.Fprintf(r.out, "%s: skipped; blocked by %s\n", identifier, strings.Join(blockers, ", "))
 		return nil
 	}
 	preflight, err := r.checkProvider(c, rt.RepoPath, runs, db, lock)
@@ -75,7 +83,7 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 		return err
 	}
 	if current == nil {
-		fmt.Fprintf(r.out, "%s: skipped; %s\n", identifier, skipReason(issue, "ownership/readiness changed before claim"))
+		fmt.Fprintf(r.out, "%s: skipped; ownership/readiness changed before claim\n", identifier)
 		return nil
 	}
 	folder := filepath.Join(runs, id)
@@ -293,13 +301,4 @@ func priorLessons(db *sql.DB, project string) ([]string, error) {
 		}
 	}
 	return lessons, rows.Err()
-}
-
-// skipReason renders why an issue was skipped before claim, preferring an
-// explicit blocker list over the caller's generic fallback.
-func skipReason(issue map[string]any, fallback string) string {
-	if blockers := blockedBy(issue); len(blockers) > 0 {
-		return "blocked by " + strings.Join(blockers, ", ")
-	}
-	return fallback
 }
