@@ -304,6 +304,26 @@ or error results fail the run. There is no engine fallback. Recognized provider
 limits can schedule automatic continuation of the recorded session; other failures
 require manual recovery. Untouched deferred issues can be tried later.
 
+### Codex CLI sandbox and the product checkout
+
+Recent Codex CLI releases (0.16x and later) mark `.git` inside every writable
+root as read-only under `--sandbox workspace-write`; this is documented as a
+protected path and cannot be relaxed without `danger-full-access`. If the run
+folder is passed as an extra writable root and the product checkout is the
+session's working directory, the agent can edit files but every `git add`,
+`commit` and `push` fails with "Read-only file system" and the run ends
+blocked with no PR. The launcher therefore starts Codex with the **run folder**
+as the working directory and no extra writable roots: the product checkout
+lives one level down (`.runs/ISSUE_UUID/repo`), so its `.git` is nested
+inside the writable root and stays writable while the sandbox still contains the
+whole run. Verified 2026-11-04 on Codex CLI 0.166 (Ubuntu 26.04 under WSL2):
+the same issue that blocked before the change produced a signed commit and a
+pull request after it. Two related notes from that run: `~/.npm` is also
+read-only inside the sandbox, so Node projects may need `npm_config_cache=/tmp`
+or an equivalent; and a run that opened its PR but could not observe the
+launcher-owned "In Review" transition before finishing reports `blocked` even
+though the pull request exists (the PR URL is in `result.json`).
+
 ## Provider capacity and limits
 
 Before claiming an eligible issue or making any Linear mutation, the runner sends
