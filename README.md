@@ -185,6 +185,13 @@ the optional `agent-ready` label opts issues into processing; remove `label`
 if readiness should depend only on status. Polling includes all currently
 eligible issues, including existing ones, rather than a creation-time cutoff.
 
+An issue that is `blocked by` another issue is skipped until it is unblocked:
+a ready issue with an active Linear "blocks" relation against it is not claimed,
+commented on, or changed, and no agent session or provider request starts. Once
+every blocker reaches a terminal workflow state (`Done`, `Canceled`, or
+`Duplicate`), the block resolves and the issue is picked up on a later tick with
+no manual reset. This gate is always on for every route.
+
 Supply the Linear API key through the local `LINEAR_API_KEY` environment variable.
 The runner does not load credential files. Credentials are not stored in config,
 issue snapshots, prompts, or the state database, and the Linear key is removed

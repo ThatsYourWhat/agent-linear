@@ -14,7 +14,8 @@ import (
 
 const issueFields = `id identifier title description url updatedAt createdAt
  project { id name } team { id } state { id name type } assignee { id isMe }
- relations { nodes { type relatedIssue { identifier state { type } } } }`
+ relations { nodes { type relatedIssue { identifier state { type } } } }
+ inverseRelations { nodes { type issue { identifier state { type } } } }`
 const queueQuery = `query Queue($filter: IssueFilter!, $after: String) {
  issues(first: 50, after: $after, filter: $filter, orderBy: createdAt) {
  nodes { ` + issueFields + ` } pageInfo { hasNextPage endCursor }
@@ -120,6 +121,9 @@ func (r *runner) claimableIssue(id, project string, rt *route) (map[string]any, 
 	}
 	if err = validateIssue(current, project, rt); err != nil {
 		return nil, err
+	}
+	if blocked := blockedBy(current); len(blocked) > 0 {
+		return nil, nil
 	}
 	return current, nil
 }

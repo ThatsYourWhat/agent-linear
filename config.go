@@ -236,6 +236,34 @@ func (r *runner) validateConfig(c *config) error {
 
 var errIssueBody = errors.New("issue needs a title and body with requirements and acceptance criteria")
 
+// terminalStates are the Linear workflow state types that resolve a block.
+// A blocked issue becomes eligible again only once every blocker reaches one
+// of these states.
+var terminalStates = map[string]bool{"completed": true, "canceled": true, "duplicate": true}
+
+// blockedBy returns the identifiers of issues that currently block issue. A
+// block is active while its blocker's workflow state type is not terminal.
+// Linear stores "X is blocked by Y" as an incoming edge on X: X's
+// inverseRelations node of type "blocks" points at Y via its "issue" field.
+func blockedBy(issue map[string]any) []string {
+	relations, _ := issue["inverseRelations"].(map[string]any)
+	nodes, _ := relations["nodes"].([]any)
+	var blockers []string
+	for _, node := range nodes {
+		relation, ok := node.(map[string]any)
+		if !ok || textAt(relation, "type") != "blocks" {
+			continue
+		}
+		if terminalStates[textAt(relation["issue"], "state", "type")] {
+			continue
+		}
+		if id := textAt(relation["issue"], "identifier"); id != "" {
+			blockers = append(blockers, id)
+		}
+	}
+	return blockers
+}
+
 func validateIssue(issue map[string]any, project string, rt *route) error {
 	if !uuidRE.MatchString(textAt(issue, "id")) {
 		return errors.New("invalid Linear issue UUID")
