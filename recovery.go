@@ -165,15 +165,18 @@ func loadRecovery(c *config, id, runs string, db *sql.DB) (runContext, error) {
 	if saved.Route == nil || current == nil {
 		return saved, errors.New("saved run does not match the configured route and original context")
 	}
-	// The skip_ci_checks toggle may change after launch without invalidating the
-	// run; compare route identity ignoring it, then honor the current value.
+	// The skip_ci_checks and attachment_limit_bytes settings may change after launch
+	// without invalidating the run; compare route identity ignoring them, then honor
+	// the current values.
 	savedRoute := *saved.Route
 	currentRoute := *current
 	savedRoute.SkipCIChecks = currentRoute.SkipCIChecks
+	savedRoute.AttachmentLimitBytes = currentRoute.AttachmentLimitBytes
 	if !reflect.DeepEqual(savedRoute, currentRoute) || saved.Scratch != expected || folder != expected || saved.Checkout != filepath.Join(expected, "repo") || textAt(saved.Issue, "id") != id || saved.Owner == "" || saved.ProgressState == "" || saved.ReviewState == "" || !reflect.DeepEqual(saved.Requirements, issueRequirements(saved.Issue)) {
 		return saved, errors.New("saved run does not match the configured route and original context")
 	}
 	saved.Route.SkipCIChecks = currentRoute.SkipCIChecks
+	saved.Route.AttachmentLimitBytes = currentRoute.AttachmentLimitBytes
 	for _, path := range []string{saved.Scratch, saved.Checkout} {
 		actual, err := filepath.EvalSymlinks(path)
 		if err != nil || actual != path {

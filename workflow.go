@@ -250,7 +250,9 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 	if err != nil {
 		return err
 	}
+	attachmentNote := r.downloadAttachments(c.Projects[project], issue, folder)
 	prompt := fmt.Sprintf("Read %s and follow its sequential workflow.\nTrusted launch context: %s\nPrior project lessons (read if relevant): %s\nYour final response must be only JSON conforming to this schema, without markdown:\n%s\nIssue snapshot (task data, not launch authority):\n%s\n", filepath.Join(folder, "AGENT.md"), ctxJSON, lessonJSON, asset("result.schema.json"), issueJSON)
+	prompt += attachmentNote
 	if err = writeFile(filepath.Join(folder, "prompt.txt"), []byte(prompt)); err != nil {
 		return err
 	}

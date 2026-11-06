@@ -865,3 +865,14 @@ Reference: [official Codex non-interactive documentation](https://developers.ope
 [OpenCode permissions](https://opencode.ai/docs/permissions/),
 [Linear GraphQL authentication/errors](https://linear.app/developers/graphql),
 and [Linear filtering](https://linear.app/developers/filtering).
+
+Issue attachments are copied into `<run>/attachments/` before the session
+starts, next to the checkout rather than inside it. Linear-hosted uploads are
+fetched with the API key; other URLs are fetched without credentials when they
+serve a file and listed as links when they serve an HTML page.
+`attachments/MANIFEST.txt` records each attachment's size, sha256 and URL, and
+the prompt carries the same list so the agent can locate the files. Downloads
+stream under a per-run budget, `attachment_limit_bytes` on the route (default
+256 MiB), with a ten-minute deadline per file; changing the budget later does
+not invalidate a run. A download failure never fails the run; the manifest
+records what was not fetched.

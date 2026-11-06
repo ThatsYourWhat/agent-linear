@@ -33,6 +33,7 @@ type route struct {
 	BaseBranch           string `json:"base_branch"`
 	RequireSignedCommits bool   `json:"require_signed_commits"`
 	SkipCIChecks         bool   `json:"skip_ci_checks"`
+	AttachmentLimitBytes int64  `json:"attachment_limit_bytes,omitempty"`
 	Deployment           struct {
 		Mode         string `json:"mode"`
 		Environment  string `json:"environment"`
