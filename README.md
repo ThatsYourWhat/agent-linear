@@ -648,6 +648,13 @@ PR is then accepted without a required status check. These reads follow
 [GitHub's required-check CLI](https://cli.github.com/manual/gh_pr_checks) and
 [effective branch rules API](https://docs.github.com/en/rest/repos/rules#get-rules-for-a-branch).
 
+A run that finishes `blocked`, `failed`, or `ready` without a pull request needs
+a person. Set `needs_operator_state_id` on a route to move the issue into that
+workflow state after the finish comment, so the board shows it rather than a
+comment alone. The state must differ from `ready_state_id`, or the runner would
+claim the issue again. Provider-limit pauses are resumed automatically and stay
+in progress. Omit the key to keep the current behavior.
+
 The process holds a nonblocking `flock` for the entire tick; the agent child
 inherits the lock descriptor, so an orphaned session retains the worker lock.
 This is a **single-host** queue. Do not run another installation against the

@@ -163,6 +163,14 @@ func (r *runner) runIssue(c *config, project string, issue map[string]any, runs 
 		if e := r.postComment(id, body, folder, "finish"); e != nil {
 			fmt.Fprintln(r.errOut, "Run outcome preserved; inspect finish-comment delivery evidence")
 		}
+		// A finish that needs a person moves the issue to the route's needs_operator_state_id,
+		// when configured, so the board shows it rather than a comment alone. Provider-limit
+		// pauses are resumed automatically and stay where they are.
+		if rt != nil && rt.NeedsOperatorStateID != "" && (status == "failed" || status == "blocked" && !providerLimited || status == "ready" && noCode) {
+			if e := r.updateIssueState(id, rt.NeedsOperatorStateID, folder, "needs-operator", "", false); e != nil {
+				fmt.Fprintln(r.errOut, "Run outcome preserved; inspect needs-operator state evidence")
+			}
+		}
 	}()
 	if err = recordActivity(folder, "starting"); err != nil {
 		return err

@@ -27,6 +27,7 @@ type route struct {
 	TeamID               string `json:"team_id"`
 	ReadyStateID         string `json:"ready_state_id"`
 	TriageStateID        string `json:"triage_state_id"`
+	NeedsOperatorStateID string `json:"needs_operator_state_id,omitempty"`
 	Label                string `json:"label,omitempty"`
 	RepoPath             string `json:"repo_path"`
 	GitHubRepo           string `json:"github_repo"`
@@ -199,6 +200,12 @@ func (r *runner) validateConfig(c *config) error {
 		}
 		if rt.TriageStateID != "" && rt.TriageStateID == rt.ReadyStateID {
 			return errors.New("triage_state_id must differ from ready_state_id")
+		}
+		if rt.NeedsOperatorStateID != "" && !uuidRE.MatchString(rt.NeedsOperatorStateID) {
+			return errors.New("needs_operator_state_id must be a UUID, or omitted")
+		}
+		if rt.NeedsOperatorStateID != "" && rt.NeedsOperatorStateID == rt.ReadyStateID {
+			return errors.New("needs_operator_state_id must differ from ready_state_id")
 		}
 		if rt.BaseBranch != "staging" {
 			return errors.New("all feature PRs must target staging")
