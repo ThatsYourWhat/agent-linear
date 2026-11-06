@@ -16,6 +16,7 @@ import (
 
 const issueFields = `id identifier title description url updatedAt createdAt
  project { id name } team { id } state { id name type } assignee { id isMe }
+ attachments { nodes { title subtitle url } }
  relations { nodes { type relatedIssue { identifier state { type } } } }
  inverseRelations { nodes { type issue { id identifier state { type } } } }`
 const queueQuery = `query Queue($filter: IssueFilter!, $after: String) {
